@@ -1,0 +1,10 @@
+target/
+.git/
+.github/
+.env
+.env.*
+*.jks
+*.keystore
+.idea/
+*.iml
+README.md

@@ -1,0 +1,21 @@
+# Build output
+target/
+
+# Environment and secrets (never commit)
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+key.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# Logs
+*.log
