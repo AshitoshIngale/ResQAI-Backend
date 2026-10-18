@@ -1,0 +1,16 @@
+# Render Blueprint: deploy via Render Dashboard -> New -> Blueprint -> select this repo
+services:
+  - type: web
+    name: resqai-backend
+    runtime: docker
+    plan: free
+    healthCheckPath: /actuator/health
+    envVars:
+      - key: SPRING_DATA_MONGODB_URI
+        sync: false          # prompted at deploy time: paste your Atlas connection string
+      - key: SPRING_DATA_MONGODB_DATABASE
+        value: resqai
+      - key: JWT_SECRET
+        generateValue: true  # Render auto-generates a secure random secret
+      - key: CORS_ALLOWED_ORIGINS
+        value: ""
