@@ -1,0 +1,25 @@
+name: Keep backend warm
+
+# Render's free instance spins down after ~15 minutes without incoming
+# traffic, and the next request then pays a ~50-90s cold boot. This ping
+# keeps the API warm so the ResQAI app gets fast logins 24/7.
+# Scheduled workflows are free for public repositories.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        run: |
+          # The deploy-triggering endpoint doubles as a keep-alive: the health
+          # probe is unauthenticated by design and reports MongoDB readiness.
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 \
+            https://resqai-backend-n128.onrender.com/actuator/health || true)
+          echo "keep-alive health check returned: $code"
+          if [ "$code" != "200" ]; then
+            echo "::warning::Backend health returned $code — instance may be booting or down"
+          fi
