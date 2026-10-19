@@ -162,11 +162,18 @@ public final class AuthDtos {
         /** States the delivery mode honestly (test mode when no provider configured). */
         public String message;
 
+        public String devCode;
+
         public RegisterResponse(String userId, boolean emailRequired, boolean phoneRequired, String message) {
             this.userId = userId;
             this.emailVerificationRequired = emailRequired;
             this.phoneVerificationRequired = phoneRequired;
             this.message = message;
+        }
+
+        public RegisterResponse(String userId, boolean emailRequired, boolean phoneRequired, String message, String devCode) {
+            this(userId, emailRequired, phoneRequired, message);
+            this.devCode = devCode;
         }
     }
 
@@ -174,11 +181,17 @@ public final class AuthDtos {
     public static class MessageResponse {
         public String message;
         public Long retryAfterSeconds;
+        /** TEST MODE only: the verification/reset code when no provider is configured. */
+        public String devCode;
 
         public MessageResponse(String message) { this.message = message; }
         public MessageResponse(String message, Long retryAfterSeconds) {
             this.message = message;
             this.retryAfterSeconds = retryAfterSeconds;
+        }
+        public MessageResponse(String message, String devCode) {
+            this.message = message;
+            this.devCode = devCode;
         }
     }
 

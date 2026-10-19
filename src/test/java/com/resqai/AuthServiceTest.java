@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -459,8 +460,9 @@ class AuthServiceTest {
     @Test
     void forgotPasswordIsGenericAndUnknownEmailsDoNothing() {
         when(users.findByNormalizedEmail("ghost@example.com")).thenReturn(Optional.empty());
-        service.forgotPassword(forgotRequest("ghost@example.com"), "c");
+        AuthDtos.MessageResponse response = service.forgotPassword(forgotRequest("ghost@example.com"), "c");
         assertTrue(sentEmailCodes.isEmpty(), "no reset code for unknown email");
+        assertNull(response.devCode, "unknown email must not leak a reset code");
     }
 
     @Test
@@ -478,9 +480,10 @@ class AuthServiceTest {
 
         AuthDtos.AuthTokensResponse tokens = service.login(loginRequest("thirteen@example.com", "S3cure!Passw0rd"), "c");
 
-        service.forgotPassword(forgotRequest("thirteen@example.com"), "c");
+        AuthDtos.MessageResponse response = service.forgotPassword(forgotRequest("thirteen@example.com"), "c");
         String resetCode = sentEmailCodes.get("reset:thirteen@example.com");
         assertNotNull(resetCode);
+        assertEquals(resetCode, response.devCode, "test mode returns the reset code to the app");
 
         service.resetPassword(resetRequest("thirteen@example.com", resetCode, "N3wPassword!42"));
 

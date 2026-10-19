@@ -80,9 +80,7 @@ public class AuthController {
     @PostMapping("/forgot-password")
     public ResponseEntity<AuthDtos.MessageResponse> forgotPassword(@Valid @RequestBody ForgotPasswordRequest request,
                                                                    HttpServletRequest http) {
-        authService.forgotPassword(request, clientKey(http));
-        return ResponseEntity.ok(new AuthDtos.MessageResponse(
-            "If that email is registered, a reset code has been sent."));
+        return ResponseEntity.ok(authService.forgotPassword(request, clientKey(http)));
     }
 
     @PostMapping("/reset-password")

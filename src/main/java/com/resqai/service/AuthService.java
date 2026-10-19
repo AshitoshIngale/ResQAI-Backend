@@ -150,13 +150,14 @@ public class AuthService {
 
         String message = emailSender.isProduction()
             ? "Registration started. Verify your email and phone to activate the account."
-            : "TEST MODE: no email provider configured — the verification code is in the server log only.";
+            : "TEST MODE: no email provider configured — use the code shown in the app.";
+        String devCode = emailSender.isProduction() ? null : emailCode;
 
         audit(user, "REGISTER", emailSender.isProduction() ? "smtp" : "dev-mail-adapter");
         users.save(user);
 
         log.info("User registered: {} (emailVerified={}, phoneVerified={})", user.getId(), false, false);
-        return new AuthDtos.RegisterResponse(user.getId(), true, true, message);
+        return new AuthDtos.RegisterResponse(user.getId(), true, true, message, devCode);
     }
 
     // ---------------- Email verification ----------------
@@ -196,9 +197,9 @@ public class AuthService {
         smsSender.sendOtp(request.phone.trim(), otp);
 
         String message = smsSender.isProduction()
-            ? "OTP sent." + (otpMaxAttempts > 0 ? "" : "")
-            : "TEST MODE: no SMS provider configured — the OTP is in the server log only.";
-        return new AuthDtos.MessageResponse(message);
+            ? "OTP sent."
+            : "TEST MODE: no SMS provider configured — use the OTP shown in the app.";
+        return new AuthDtos.MessageResponse(message, smsSender.isProduction() ? null : otp);
     }
 
     public void verifyPhoneOtp(AuthDtos.VerifyPhoneOtpRequest request) {
@@ -303,19 +304,25 @@ public class AuthService {
 
     // ---------------- Password recovery ----------------
 
-    public void forgotPassword(AuthDtos.ForgotPasswordRequest request, String clientKey) {
+    public AuthDtos.MessageResponse forgotPassword(AuthDtos.ForgotPasswordRequest request, String clientKey) {
         if (!rateLimiter.tryConsume(RateLimiter.Policy.PASSWORD_RESET, clientKey)) {
             throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Too many requests");
         }
         // Generic response regardless of account existence (no enumeration).
         String normalizedEmail = normalizeEmail(request.email);
+        final String[] devCode = {null};
         users.findByNormalizedEmail(normalizedEmail).ifPresent(user -> {
             String code = numericCode(6);
             verifications.issue(PendingVerification.Kind.PASSWORD_RESET, normalizedEmail, code, resetTtlMinutes, 10);
             emailSender.sendPasswordResetCode(user.getEmail(), code);
             audit(user, "PASSWORD_RESET_REQUESTED", emailSender.isProduction() ? "smtp" : "dev-mail-adapter");
             users.save(user);
+            // TEST MODE only: no mail provider exists, so the code is returned
+            // to the app instead of being unreachable in server logs.
+            if (!emailSender.isProduction()) devCode[0] = code;
         });
+        return new AuthDtos.MessageResponse(
+            "If that email is registered, a reset code has been sent.", devCode[0]);
     }
 
     public void resetPassword(AuthDtos.ResetPasswordRequest request) {
