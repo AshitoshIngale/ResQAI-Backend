@@ -105,4 +105,24 @@ public class BystanderReportDocument {
     public void setMatchStatus(String matchStatus) { this.matchStatus = matchStatus; }
     public String getMatchSignals() { return matchSignals; }
     public void setMatchSignals(String matchSignals) { this.matchSignals = matchSignals; }
+
+    /** Honest Twilio notification outcome: NOT_CONFIGURED / SENT / FAILED / INVALID_CREDENTIALS. */
+    private String notificationStatus;
+
+    /** Compact per-recipient outcome summary (no credentials, no full record). */
+    private String notificationDetail;
+
+    /** Sarvam voice-note transcript (limited information only). */
+    private String voiceTranscript;
+
+    private Instant notificationAttemptedAt;
+
+    public String getNotificationStatus() { return notificationStatus; }
+    public void setNotificationStatus(String notificationStatus) { this.notificationStatus = notificationStatus; }
+    public String getNotificationDetail() { return notificationDetail; }
+    public void setNotificationDetail(String notificationDetail) { this.notificationDetail = notificationDetail; }
+    public String getVoiceTranscript() { return voiceTranscript; }
+    public void setVoiceTranscript(String voiceTranscript) { this.voiceTranscript = voiceTranscript; }
+    public Instant getNotificationAttemptedAt() { return notificationAttemptedAt; }
+    public void setNotificationAttemptedAt(Instant notificationAttemptedAt) { this.notificationAttemptedAt = notificationAttemptedAt; }
 }

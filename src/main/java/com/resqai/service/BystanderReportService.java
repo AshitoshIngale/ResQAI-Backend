@@ -3,6 +3,8 @@ package com.resqai.service;
 import com.resqai.dto.BystanderDtos;
 import com.resqai.model.BystanderReportDocument;
 import com.resqai.repository.BystanderReportRepository;
+import com.resqai.repository.EmergencyContactRepository;
+import com.resqai.repository.EmergencyProfileRepository;
 
 import com.resqai.model.IncidentDocument;
 import com.resqai.repository.IncidentRepository;
@@ -15,6 +17,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -41,13 +45,22 @@ public class BystanderReportService {
     private final BystanderReportRepository reports;
     private final UserRepository users;
     private final IncidentRepository incidents;
+    private final EmergencyProfileRepository profiles;
+    private final EmergencyContactRepository contacts;
+    private final TwilioAlertService twilio;
 
     public BystanderReportService(BystanderReportRepository reports,
                                   UserRepository users,
-                                  IncidentRepository incidents) {
+                                  IncidentRepository incidents,
+                                  EmergencyProfileRepository profiles,
+                                  EmergencyContactRepository contacts,
+                                  TwilioAlertService twilio) {
         this.reports = reports;
         this.users = users;
         this.incidents = incidents;
+        this.profiles = profiles;
+        this.contacts = contacts;
+        this.twilio = twilio;
     }
 
     /**
@@ -122,12 +135,38 @@ public class BystanderReportService {
 
         if (verified) {
             attemptAssociation(report, victim.get());
+            notifyVictimContacts(report, victim.get());
         }
 
         BystanderReportDocument saved = reports.save(report);
         BystanderDtos.ReportResponse response = toResponse(saved);
         response.duplicate = false;
         return response;
+    }
+
+    /**
+     * Notifies the victim's saved emergency contacts via Twilio and records
+     * the REAL provider outcome on the report. Missing credentials produce
+     * NOT_CONFIGURED — never a fabricated "contacts notified".
+     */
+    private void notifyVictimContacts(BystanderReportDocument report, UserDocument victim) {
+        try {
+            List<String> numbers = new ArrayList<>();
+            contacts.findByOwnerUserIdOrderByCreatedAtAsc(victim.getId())
+                .forEach(c -> numbers.add(c.getPhone()));
+            profiles.findByUserId(victim.getId()).ifPresent(profile ->
+                profile.getEmergencyContacts().forEach(c -> numbers.add(c.getPhone())));
+            String locationText = report.getLatitude() != null && report.getLongitude() != null
+                ? report.getLatitude() + "," + report.getLongitude() : null;
+            TwilioAlertService.NotificationResult result =
+                twilio.notifyEmergencyContacts(victim.getFullName(), numbers, report.getCategory(), locationText);
+            report.setNotificationStatus(result.status().name());
+            report.setNotificationDetail(TwilioAlertService.persistableSummary(result));
+            report.setNotificationAttemptedAt(result.attemptedAt());
+        } catch (Exception e) {
+            report.setNotificationStatus("FAILED");
+            report.setNotificationDetail("notification error (details omitted)");
+        }
     }
 
     /**
@@ -206,6 +245,8 @@ public class BystanderReportService {
         response.matchSignals = report.getMatchSignals();
         response.serverCreatedAt = report.getServerCreatedAt() != null
             ? report.getServerCreatedAt().toEpochMilli() : null;
+        response.notificationStatus = report.getNotificationStatus();
+        response.voiceTranscript = report.getVoiceTranscript();
         return response;
     }
 }

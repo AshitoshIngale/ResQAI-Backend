@@ -80,5 +80,7 @@ public final class BystanderDtos {
         public String matchSignals;
         public Long serverCreatedAt;
         public boolean duplicate;
+        public String notificationStatus;
+        public String voiceTranscript;
     }
 }

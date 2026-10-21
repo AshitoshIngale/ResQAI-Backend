@@ -27,10 +27,63 @@ public class BystanderController {
 
     private final BystanderReportService reportService;
     private final RateLimiter rateLimiter;
+    private final com.resqai.service.SarvamSpeechService sarvamSpeech;
+    private final com.resqai.repository.BystanderReportRepository reportRepository;
 
-    public BystanderController(BystanderReportService reportService, RateLimiter rateLimiter) {
+    public BystanderController(BystanderReportService reportService, RateLimiter rateLimiter,
+                               com.resqai.service.SarvamSpeechService sarvamSpeech,
+                               com.resqai.repository.BystanderReportRepository reportRepository) {
         this.reportService = reportService;
         this.rateLimiter = rateLimiter;
+        this.sarvamSpeech = sarvamSpeech;
+        this.reportRepository = reportRepository;
+    }
+
+    /**
+     * Transcribes a bystander voice note through Sarvam and stores ONLY the
+     * transcript text (limited information) against the report. The audio
+     * itself is never persisted. Honest statuses for every failure mode.
+     */
+    @PostMapping("/bystander/reports/{reportId}/voice-note")
+    public ResponseEntity<java.util.Map<String, Object>> voiceNote(
+            @org.springframework.web.bind.annotation.PathVariable String reportId,
+            @org.springframework.web.bind.annotation.RequestBody VoiceNoteRequest request,
+            jakarta.servlet.http.HttpServletRequest http) {
+        if (!rateLimiter.tryConsume(com.resqai.security.RateLimiter.Policy.BYSTANDER_REPORT, clientKey(http))) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.TOO_MANY_REQUESTS, "Too many requests");
+        }
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+        byte[] audio;
+        try {
+            audio = java.util.Base64.getDecoder().decode(
+                request == null || request.audioBase64 == null ? "" : request.audioBase64);
+        } catch (IllegalArgumentException e) {
+            out.put("status", "FAILED");
+            out.put("detail", "audioBase64 is not valid Base64.");
+            return ResponseEntity.badRequest().body(out);
+        }
+        var result = sarvamSpeech.transcribe(audio, request == null ? null : request.languageCode);
+        out.put("status", result.status().name());
+        out.put("detail", result.detail());
+        if (result.transcript() != null) {
+            out.put("transcript", result.transcript());
+            var report = reportRepository.findByReportId(reportId);
+            report.ifPresent(r -> {
+                r.setVoiceTranscript(result.transcript());
+                r.setServerUpdatedAt(java.time.Instant.now());
+                reportRepository.save(r);
+            });
+            if (report.isEmpty()) {
+                out.put("detail", "Transcribed, but the report is not on the server yet (offline queue still syncing).");
+            }
+        }
+        return ResponseEntity.ok(out);
+    }
+
+    public static class VoiceNoteRequest {
+        public String audioBase64;
+        public String languageCode;
     }
 
     @GetMapping("/emergency-ids/{emergencyCode}/summary")
