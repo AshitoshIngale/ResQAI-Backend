@@ -49,6 +49,58 @@ class ProviderServicesTest {
     }
 
     @Test
+    void twilioPrefersWhatsAppChannelWhenConfigured() {
+        ProviderHttpClient capture = (method, url, contentType, auth, bytes) ->
+            new ProviderHttpClient.ProviderResponse(201, "{\"sid\":\"SM2\"}");
+        TwilioAlertService service = new TwilioAlertService(
+            capture, "AC123", "auth", "", "whatsapp:+14155238886");
+        var result = service.notifyEmergencyContacts(
+            "Test User", List.of("+919000000001"), "FALL", "16.67,74.25");
+        assertEquals(TwilioAlertService.Status.SENT, result.status());
+        assertTrue(result.detail().contains("channel=whatsapp"));
+    }
+
+    @Test
+    void twilioWhatsAppSendUsesWhatsAppPrefixesOnWire() {
+        String[] wireForm = {null};
+        ProviderHttpClient capture = (method, url, contentType, auth, bytes) -> {
+            wireForm[0] = new String(bytes, StandardCharsets.UTF_8);
+            return new ProviderHttpClient.ProviderResponse(201, "{\"sid\":\"SM3\"}");
+        };
+        TwilioAlertService service = new TwilioAlertService(
+            capture, "AC123", "auth", "", "whatsapp:+14155238886");
+        service.notifyEmergencyContacts("U", List.of("+919000000001"), "FALL", null);
+        assertTrue(wireForm[0].contains("To=whatsapp%3A%2B919000000001"));
+        assertTrue(wireForm[0].contains("From=whatsapp%3A%2B14155238886"));
+    }
+
+    @Test
+    void twilioSmsFallbackUsedWhenWhatsAppNotConfigured() {
+        String[] wireForm = {null};
+        ProviderHttpClient capture = (method, url, contentType, auth, bytes) -> {
+            wireForm[0] = new String(bytes, StandardCharsets.UTF_8);
+            return new ProviderHttpClient.ProviderResponse(201, "{\"sid\":\"SM4\"}");
+        };
+        TwilioAlertService service = new TwilioAlertService(
+            capture, "AC123", "auth", "+15550001111", "");
+        service.notifyEmergencyContacts("U", List.of("+919000000001"), "FALL", null);
+        assertTrue(wireForm[0].contains("To=%2B919000000001"));
+        assertTrue(wireForm[0].contains("From=%2B15550001111"));
+        assertTrue(wireForm[0].startsWith("To=")); // no whatsapp: prefix on SMS path
+    }
+
+    @Test
+    void twilioDetailIncludesTwilioErrorCodeOnFailure() {
+        ProviderHttpClient capture = (method, url, contentType, auth, bytes) ->
+            new ProviderHttpClient.ProviderResponse(400, "{\"code\":21659,\"message\":\"not owned\"}");
+        TwilioAlertService service = new TwilioAlertService(
+            capture, "AC123", "auth", "+15550001111", "");
+        var result = service.notifyEmergencyContacts("U", List.of("+919000000001"), "FALL", null);
+        assertEquals(TwilioAlertService.Status.FAILED, result.status());
+        assertTrue(result.detail().contains("FAILED(400:21659)"));
+    }
+
+    @Test
     void twilioReportsInvalidCredentialsOn401() {
         TwilioAlertService service = new TwilioAlertService(fake(401, ""), "AC123", "bad", "+15550001111");
         var result = service.notifyEmergencyContacts("U", List.of("+919000000001"), "FALL", null);
@@ -93,6 +145,23 @@ class ProviderServicesTest {
         assertEquals(SarvamSpeechService.Status.TRANSCRIBED, result.status());
         assertEquals("person fell near the gate", result.transcript());
         assertTrue(seen[0].body.contains("near the gate"));
+    }
+
+    @Test
+    void sarvamSendsBearerAuthAndCurrentModelOnWire() {
+        String[] wire = {null};
+        String[] auth = {null};
+        ProviderHttpClient capture = (method, url, contentType, authHeader, bytes) -> {
+            wire[0] = new String(bytes, StandardCharsets.UTF_8);
+            auth[0] = authHeader;
+            return new ProviderHttpClient.ProviderResponse(
+                200, "{\"transcript\":\"ok\"}");
+        };
+        SarvamSpeechService service = new SarvamSpeechService(capture, "test-api-key");
+        service.transcribe("audio".getBytes(StandardCharsets.UTF_8), null);
+        assertEquals("Bearer test-api-key", auth[0]);
+        assertTrue(wire[0].contains("saaras:v3"));
+        assertTrue(wire[0].contains("name=\"language_code\""));
     }
 
     @Test

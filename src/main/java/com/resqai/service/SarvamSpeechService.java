@@ -37,12 +37,21 @@ public class SarvamSpeechService {
 
     private final ProviderHttpClient http;
     private final String apiKey;
+    private final String sttModel;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public SarvamSpeechService(ProviderHttpClient http,
                                @Value("${resqai.sarvam.api-key:}") String apiKey) {
+        this(http, apiKey, "saaras:v3");
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public SarvamSpeechService(ProviderHttpClient http,
+                               @Value("${resqai.sarvam.api-key:}") String apiKey,
+                               @Value("${resqai.sarvam.stt-model:saaras:v3}") String sttModel) {
         this.http = http;
         this.apiKey = apiKey == null ? "" : apiKey.trim();
+        this.sttModel = sttModel == null || sttModel.isBlank() ? "saaras:v3" : sttModel.trim();
     }
 
     public boolean isConfigured() {
@@ -65,7 +74,7 @@ public class SarvamSpeechService {
             ProviderHttpClient.ProviderResponse response = http.send(
                 "POST", SARVAM_STT_URL,
                 "multipart/form-data; boundary=" + BOUNDARY,
-                apiKey, // Sarvam uses the raw API key in the Authorization header
+                "Bearer " + apiKey, // Sarvam expects "Authorization: Bearer <api-key>"
                 multipart);
             if (response.statusCode == 401 || response.statusCode == 403) {
                 return new TranscriptionResult(Status.INVALID_CREDENTIALS, null,
@@ -95,8 +104,8 @@ public class SarvamSpeechService {
             "--" + BOUNDARY + "\r\n" +
             "Content-Disposition: form-data; name=\"file\"; filename=\"note.m4a\"\r\n" +
             "Content-Type: audio/mp4\r\n\r\n";
-        String mid = "\r\n--" + BOUNDARY + "\r\n" +
-            "Content-Disposition: form-data; name=\"model\"\r\n\r\nsaarika:v2\r\n" +
+            String mid = "\r\n--" + BOUNDARY + "\r\n" +
+            "Content-Disposition: form-data; name=\"model\"\r\n\r\n" + sttModel + "\r\n" +
             "--" + BOUNDARY + "\r\n" +
             "Content-Disposition: form-data; name=\"language_code\"\r\n\r\n" + lang + "\r\n" +
             "--" + BOUNDARY + "--\r\n";
