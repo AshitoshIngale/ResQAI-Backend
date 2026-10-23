@@ -82,5 +82,25 @@ public final class BystanderDtos {
         public boolean duplicate;
         public String notificationStatus;
         public String voiceTranscript;
+        /** Authorized victim medical summary — minimum necessary fields, VERIFIED reports only. */
+        public VictimSummary victimSummary;
+        /** Automated emergency-call attempt outcome (honest; INITIATED is not a dispatch claim). */
+        public String callStatus;
+        public String callDetail;
+    }
+
+    /**
+     * The MINIMUM authorized medical disclosure for an emergency responder.
+     * Every field is null when unavailable — nothing is ever invented. The
+     * server's record is authoritative; client-supplied values are ignored.
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class VictimSummary {
+        public String emergencyName;
+        public String bloodGroup;
+        public List<String> allergies;
+        public List<String> medicalConditions;
+        public List<String> currentMedications;
+        public String emergencyContactPhone;
     }
 }

@@ -117,6 +117,26 @@ public class BystanderReportDocument {
 
     private Instant notificationAttemptedAt;
 
+    /** Honest automated-call outcome: NOT_CONFIGURED / INITIATED / RESTRICTED / INVALID_CREDENTIALS / FAILED. */
+    private String callStatus;
+
+    /** Provider detail incl. Twilio restriction codes; no credentials. */
+    private String callDetail;
+
+    /** Twilio Call SID when a call was accepted (acceptance, NOT a dispatch claim). */
+    private String callSid;
+
+    private Instant callAttemptedAt;
+
+    public String getCallStatus() { return callStatus; }
+    public void setCallStatus(String callStatus) { this.callStatus = callStatus; }
+    public String getCallDetail() { return callDetail; }
+    public void setCallDetail(String callDetail) { this.callDetail = callDetail; }
+    public String getCallSid() { return callSid; }
+    public void setCallSid(String callSid) { this.callSid = callSid; }
+    public Instant getCallAttemptedAt() { return callAttemptedAt; }
+    public void setCallAttemptedAt(Instant callAttemptedAt) { this.callAttemptedAt = callAttemptedAt; }
+
     public String getNotificationStatus() { return notificationStatus; }
     public void setNotificationStatus(String notificationStatus) { this.notificationStatus = notificationStatus; }
     public String getNotificationDetail() { return notificationDetail; }

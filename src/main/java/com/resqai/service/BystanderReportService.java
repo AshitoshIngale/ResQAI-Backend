@@ -4,6 +4,7 @@ import com.resqai.dto.BystanderDtos;
 import com.resqai.model.BystanderReportDocument;
 import com.resqai.repository.BystanderReportRepository;
 import com.resqai.repository.EmergencyContactRepository;
+import com.resqai.repository.MedicalAccessAuditRepository;
 import com.resqai.repository.EmergencyProfileRepository;
 
 import com.resqai.model.IncidentDocument;
@@ -48,19 +49,36 @@ public class BystanderReportService {
     private final EmergencyProfileRepository profiles;
     private final EmergencyContactRepository contacts;
     private final TwilioAlertService twilio;
+    private final TwilioVoiceService voice;
+    private final MedicalAccessAuditRepository audit;
+    private final EmergencyCallScriptService scriptService;
+
+    /** Destination for the automated emergency call (server-managed, env-only). */
+    @org.springframework.beans.factory.annotation.Value("${resqai.emergency-call.destination:}")
+    private String emergencyCallDestination;
+
+    /** Public base URL for Twilio webhook callbacks (TwiML/TTS/status). */
+    @org.springframework.beans.factory.annotation.Value("${resqai.public-base-url:}")
+    private String publicBaseUrl;
 
     public BystanderReportService(BystanderReportRepository reports,
                                   UserRepository users,
                                   IncidentRepository incidents,
                                   EmergencyProfileRepository profiles,
                                   EmergencyContactRepository contacts,
-                                  TwilioAlertService twilio) {
+                                  TwilioAlertService twilio,
+                                  TwilioVoiceService voice,
+                                  MedicalAccessAuditRepository audit,
+                                  EmergencyCallScriptService scriptService) {
         this.reports = reports;
         this.users = users;
         this.incidents = incidents;
         this.profiles = profiles;
         this.contacts = contacts;
         this.twilio = twilio;
+        this.voice = voice;
+        this.audit = audit;
+        this.scriptService = scriptService;
     }
 
     /**
@@ -133,15 +151,102 @@ public class BystanderReportService {
         report.setServerCreatedAt(Instant.now());
         report.setServerUpdatedAt(report.getServerCreatedAt());
 
-        if (verified) {
-            attemptAssociation(report, victim.get());
-            notifyVictimContacts(report, victim.get());
-        }
-
+        // Persist the incident context BEFORE any external provider call so a
+        // provider outage can never lose the report, and the reportId exists
+        // for idempotent retries.
         BystanderReportDocument saved = reports.save(report);
+        if (verified) {
+            attemptAssociation(saved, victim.get());
+            notifyVictimContacts(saved, victim.get());
+            initiateEmergencyCallOnce(saved, victim.get());
+            saved = reports.save(saved);
+        }
         BystanderDtos.ReportResponse response = toResponse(saved);
         response.duplicate = false;
         return response;
+    }
+
+    /**
+     * Builds the MINIMUM authorized medical summary from the server's own
+     * record (client values are never trusted). Missing fields stay null -
+     * nothing is invented. Every disclosure is audited.
+     */
+    public BystanderDtos.VictimSummary buildAuthorizedSummary(
+            BystanderReportDocument report, UserDocument victim) {
+        BystanderDtos.VictimSummary summary = new BystanderDtos.VictimSummary();
+        Optional<com.resqai.model.EmergencyProfileDocument> profile =
+            profiles.findByUserId(victim.getId());
+        profile.ifPresent(p -> {
+            summary.bloodGroup = blankToNull(p.getBloodGroup());
+            summary.allergies = nonEmpty(p.getAllergies());
+            summary.medicalConditions = nonEmpty(p.getMedicalConditions());
+            summary.currentMedications = nonEmpty(p.getCurrentMedications());
+            if (p.getEmergencyContacts() != null && !p.getEmergencyContacts().isEmpty()) {
+                summary.emergencyContactPhone = p.getEmergencyContacts().get(0).getPhone();
+            }
+        });
+        summary.emergencyName = blankToNull(victim.getFullName());
+        try {
+            audit.save(new com.resqai.model.MedicalAccessAuditDocument(
+                report.getReportId(), report.getEmergencyCode(),
+                "BYSTANDER_REPORT_DISCLOSURE"));
+        } catch (Exception e) {
+            // Audit failure must not block the emergency flow; it is logged
+            // without any medical content.
+            org.slf4j.LoggerFactory.getLogger(BystanderReportService.class)
+                .warn("medical access audit write failed: {}", e.getMessage());
+        }
+        return summary;
+    }
+
+    /**
+     * Places the automated emergency call AT MOST ONCE per report
+     * (callStatus null-check = idempotency guard). The destination is the
+     * central server-managed emergency number - never a personal contact.
+     * The honest provider outcome is persisted; INITIATED only means Twilio
+     * accepted the call, never that an ambulance was dispatched.
+     */
+    public void initiateEmergencyCallOnce(BystanderReportDocument report, UserDocument victim) {
+        if (report.getCallStatus() != null) return; // already attempted - no duplicate calls
+        try {
+            String destination = emergencyCallDestination == null
+                ? "" : emergencyCallDestination.trim();
+            if (!TwilioVoiceService.isValidDestination(destination)) {
+                report.setCallStatus("FAILED");
+                report.setCallDetail("Emergency call destination is not configured "
+                    + "or invalid on the server; no call was placed.");
+                return;
+            }
+            if (publicBaseUrl == null || publicBaseUrl.isBlank()) {
+                report.setCallStatus("FAILED");
+                report.setCallDetail("Public base URL is not configured; "
+                    + "Twilio webhook hosting is unavailable.");
+                return;
+            }
+            String base = publicBaseUrl.replaceAll("/$", "");
+            String twimlUrl = base + "/api/v1/twiml/incident/" + report.getReportId();
+            String statusUrl = base + "/api/v1/twilio/status/" + report.getReportId();
+            TwilioVoiceService.CallResult result =
+                voice.placeEmergencyCall(destination, twimlUrl, statusUrl);
+            report.setCallStatus(result.status().name());
+            report.setCallDetail(result.detail());
+            report.setCallSid(result.callSid());
+            report.setCallAttemptedAt(result.attemptedAt());
+        } catch (Exception e) {
+            report.setCallStatus("FAILED");
+            report.setCallDetail("call initiation error (details omitted)");
+        }
+    }
+
+    private static String blankToNull(String v) {
+        return (v == null || v.isBlank()) ? null : v.trim();
+    }
+
+    private static java.util.List<String> nonEmpty(java.util.List<String> list) {
+        if (list == null) return null;
+        java.util.List<String> clean = list.stream()
+            .filter(v -> v != null && !v.isBlank()).toList();
+        return clean.isEmpty() ? null : clean;
     }
 
     /**
@@ -247,6 +352,14 @@ public class BystanderReportService {
             ? report.getServerCreatedAt().toEpochMilli() : null;
         response.notificationStatus = report.getNotificationStatus();
         response.voiceTranscript = report.getVoiceTranscript();
+        response.callStatus = report.getCallStatus();
+        response.callDetail = report.getCallDetail();
+        if ("VERIFIED".equals(report.getIdentityVerification())) {
+            users.findByEmergencyCode(report.getEmergencyCode())
+                .filter(UserDocument::isEnabled)
+                .ifPresent(victim -> response.victimSummary =
+                    buildAuthorizedSummary(report, victim));
+        }
         return response;
     }
 }

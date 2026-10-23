@@ -44,6 +44,13 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/auth/**").permitAll()
                 .requestMatchers("/api/v1/bystander/**").permitAll()
                 .requestMatchers("/api/v1/emergency-ids/**").permitAll()
+                // Twilio webhook endpoints authenticate via X-Twilio-Signature
+                // (HMAC with the auth token), not JWT; the controllers reject
+                // unsigned requests themselves. The call-config endpoint is
+                // public by design (contains only the destination number).
+                .requestMatchers("/api/v1/twiml/**", "/api/v1/tts/**",
+                                 "/api/v1/twilio/**").permitAll()
+                .requestMatchers("/api/v1/config/**").permitAll()
                 .requestMatchers("/api/v1/users/**").authenticated()
                 .requestMatchers("/api/v1/incidents/**").authenticated()
                 .requestMatchers("/api/v1/sync/**").authenticated()
