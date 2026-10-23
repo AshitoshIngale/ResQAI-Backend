@@ -46,6 +46,9 @@ public class TwilioVoiceService {
     private final String fromNumber;
     private final ObjectMapper mapper = new ObjectMapper();
 
+    /** Auto-detected owned Twilio number (cached) when voice-from env is blank. */
+    private volatile String autoDetectedFrom;
+
     public TwilioVoiceService(ProviderHttpClient http,
                               @Value("${resqai.twilio.account-sid:}") String accountSid,
                               @Value("${resqai.twilio.auth-token:}") String authToken,
@@ -56,8 +59,42 @@ public class TwilioVoiceService {
         this.fromNumber = voiceFrom == null ? "" : voiceFrom.trim();
     }
 
+    /**
+     * The From number for API calls. An explicit env value always wins; with
+     * none set, the first OWNED number on the account is auto-detected once
+     * (verified caller IDs cannot originate API calls — only owned numbers).
+     */
+    public String resolveFromNumber() {
+        if (!fromNumber.isBlank()) return fromNumber;
+        String cached = autoDetectedFrom;
+        if (cached != null) return cached;
+        if (accountSid.isBlank() || authToken.isBlank()) return "";
+        try {
+            String auth = "Basic " + Base64.getEncoder().encodeToString(
+                (accountSid + ":" + authToken).getBytes(StandardCharsets.UTF_8));
+            ProviderHttpClient.ProviderResponse response = http.send(
+                "GET", String.format(
+                    "https://api.twilio.com/2010-04-01/Accounts/%s/IncomingPhoneNumbers.json?PageSize=1&VoiceEnabled=true",
+                    accountSid),
+                "application/json", auth, new byte[0]);
+            if (response.statusCode >= 200 && response.statusCode < 300) {
+                JsonNode first = mapper.readTree(response.body)
+                    .path("incoming_phone_numbers").path(0).path("phone_number");
+                if (!first.isMissingNode() && !first.asText("").isBlank()) {
+                    autoDetectedFrom = first.asText();
+                    log.info("Auto-detected Twilio voice From number");
+                    return autoDetectedFrom;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Twilio From-number auto-detect failed: {}", e.getMessage());
+        }
+        autoDetectedFrom = ""; // negative cache; not retried every request
+        return "";
+    }
+
     public boolean isConfigured() {
-        return !accountSid.isBlank() && !authToken.isBlank() && !fromNumber.isBlank();
+        return !accountSid.isBlank() && !authToken.isBlank() && !resolveFromNumber().isBlank();
     }
 
     /**
@@ -67,7 +104,8 @@ public class TwilioVoiceService {
      */
     public CallResult placeEmergencyCall(String toNumber, String twimlUrl, String statusCallbackUrl) {
         Instant attemptedAt = Instant.now();
-        if (!isConfigured()) {
+        String from = resolveFromNumber();
+        if (accountSid.isBlank() || authToken.isBlank() || from.isBlank()) {
             return new CallResult(Status.NOT_CONFIGURED, null,
                 "Twilio Voice credentials are not configured; automated calling is unavailable.",
                 attemptedAt);
@@ -78,7 +116,7 @@ public class TwilioVoiceService {
         try {
             StringBuilder form = new StringBuilder()
                 .append("To=").append(urlEncode(toNumber))
-                .append("&From=").append(urlEncode(fromNumber))
+                .append("&From=").append(urlEncode(from))
                 .append("&Url=").append(urlEncode(twimlUrl));
             if (statusCallbackUrl != null && !statusCallbackUrl.isBlank()) {
                 form.append("&StatusCallback=").append(urlEncode(statusCallbackUrl));

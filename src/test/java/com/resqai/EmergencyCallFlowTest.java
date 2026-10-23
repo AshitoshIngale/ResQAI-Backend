@@ -175,6 +175,28 @@ class EmergencyCallFlowTest {
         assertEquals(TwilioVoiceService.Status.NOT_CONFIGURED, r3.status());
     }
 
+    @Test
+    void twilioVoiceAutoDetectsOwnedNumberWhenEnvBlank() {
+        // No explicit voice-from env: the service finds the account's OWNED
+        // number (verified caller IDs cannot originate API calls).
+        ProviderHttpClient owned = (m, u, c, a, b) -> new ProviderHttpClient.ProviderResponse(
+            200, "{\"incoming_phone_numbers\":[{\"phone_number\":\"+19789973318\"}]}");
+        TwilioVoiceService svc = new TwilioVoiceService(owned, "AC1", "t", "");
+        assertEquals("+19789973318", svc.resolveFromNumber());
+        assertTrue(svc.isConfigured());
+
+        // No owned numbers at all -> stays honestly NOT configured.
+        ProviderHttpClient none = (m, u, c, a, b) -> new ProviderHttpClient.ProviderResponse(
+            200, "{\"incoming_phone_numbers\":[]}");
+        TwilioVoiceService empty = new TwilioVoiceService(none, "AC1", "t", "");
+        assertEquals("", empty.resolveFromNumber());
+        assertFalse(empty.isConfigured());
+
+        // Explicit env value always wins over detection.
+        TwilioVoiceService explicit = new TwilioVoiceService(none, "AC1", "t", "+18005550000");
+        assertEquals("+18005550000", explicit.resolveFromNumber());
+    }
+
     // ---------------- Webhook signature ----------------
 
     /** Computes the signature with the algorithm exactly as documented by Twilio. */
