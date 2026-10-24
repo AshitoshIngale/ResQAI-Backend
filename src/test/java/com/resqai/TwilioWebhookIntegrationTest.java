@@ -105,4 +105,23 @@ class TwilioWebhookIntegrationTest {
         reports.delete(report);
         users.delete(victim);
     }
+
+    @Test
+    void ttsAudioEndpointAcceptsTwiliosDefaultGetMethod() throws Exception {
+        // Twilio <Play> fetches audio via GET. A POST-only mapping 405'd and
+        // made real calls play the "application error" message. GET with a
+        // valid signature must reach the handler (404 for unknown audio —
+        // never 405); GET without a signature is rejected.
+        String path = "/api/v1/tts/incident/some-report/some-key";
+        String url = "https://resqai-backend-n128.onrender.com" + path;
+        String signature = sign(url, Map.of(), "token");
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get(path).header("X-Twilio-Signature", signature))
+            .andExpect(status().isNotFound()); // reaches handler; audio unknown
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get(path))
+            .andExpect(status().isForbidden());
+    }
 }

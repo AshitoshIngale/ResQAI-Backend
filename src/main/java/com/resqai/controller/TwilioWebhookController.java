@@ -128,8 +128,16 @@ public class TwilioWebhookController {
         return ResponseEntity.ok().contentType(MediaType.APPLICATION_XML).body(twiml.toString());
     }
 
-    /** Serves one previously-synthesized TTS segment as WAV (Twilio Play fetches it, signed). */
-    @PostMapping(value = "/tts/incident/{reportId}/{cacheKey}", produces = "audio/wav")
+    /**
+     * Serves one previously-synthesized TTS segment as WAV (signed).
+     * Accepts GET *and* POST: Twilio's <Play> fetches audio via GET by
+     * default — a POST-only mapping returned 405 and made real calls play
+     * the "application error" message even though POST verifications passed.
+     */
+    @RequestMapping(value = "/tts/incident/{reportId}/{cacheKey}",
+        method = {org.springframework.web.bind.annotation.RequestMethod.GET,
+                  org.springframework.web.bind.annotation.RequestMethod.POST},
+        produces = "audio/wav")
     public ResponseEntity<byte[]> ttsAudio(
             @PathVariable String reportId,
             @PathVariable String cacheKey,
