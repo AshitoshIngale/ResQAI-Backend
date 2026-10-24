@@ -91,7 +91,8 @@ public class TwilioWebhookController {
             StateLanguageResolver.resolve(report.getLatitude(), report.getLongitude());
 
         List<EmergencyCallScriptService.Segment> segments = scripts.buildScript(
-            report.getCategory(), report.getLatitude(), report.getLongitude(),
+            report.getCategory(), report.getLocationName(),
+            report.getLatitude(), report.getLongitude(),
             medical.name, medical.bloodGroup, medical.allergies, medical.conditions, regional);
 
         // Twilio aborts webhooks after ~15 seconds. This handler therefore

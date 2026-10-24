@@ -47,22 +47,22 @@ public class EmergencyCallScriptService {
     );
 
     /**
-     * Builds the ordered script. English first (fullest detail), then Hindi,
-     * then the regional opener when the state mapping is certain. The
-     * location line repeats before the summary as required.
+     * Builds the ordered script: English, Hindi, then the regional language.
+     * English and Hindi both carry the FULL facts; Marathi (the primary demo
+     * region) is also fully detailed. Other regional languages get a short
+     * opener because EN + HI already carry every fact. The location line is a
+     * reverse-geocoded PLACE NAME (area, city, pincode) - humans cannot act
+     * on raw coordinates - and it is REPEATED in every detailed language.
      */
-    public List<Segment> buildScript(String category, Double lat, Double lon,
+    public List<Segment> buildScript(String category, String placeName,
+                                     Double lat, Double lon,
                                      String victimName, String bloodGroup,
                                      List<String> allergies, List<String> conditions,
                                      StateLanguageResolver.Resolution regional) {
         String categoryWord = CATEGORY_WORDS.getOrDefault(category, "emergency");
-        String locationLine = locationWords(lat, lon);
+        String locationLine = locationWords(placeName, lat, lon);
         String name = orUnavailable(victimName);
 
-        // CONCISE scripts: spoken audio runs real-time, so the full
-        // three-language call stays near 30 seconds. English carries every
-        // authorized fact; Hindi is the compact alert; the regional opener
-        // is one line. Missing fields stay honestly absent.
         List<String> en = new ArrayList<>();
         en.add("ResQAI automated emergency alert.");
         en.add("Bystander reports " + categoryWord + ".");
@@ -74,25 +74,58 @@ public class EmergencyCallScriptService {
         en.add("Location again: " + locationLine + ".");
         en.add("Please respond immediately.");
 
+        // Hindi: FULL detail mirroring English, location repeated.
         List<String> hi = new ArrayList<>();
         hi.add("ResQAI आपातकालीन अलर्ट।");
-        hi.add(hiCategory(category) + " की सूचना है।");
+        hi.add("एक द्रष्टा ने " + hiCategory(category) + " की सूचना दी है।");
         hi.add("पीड़ित: " + name + ".");
+        hi.add("रक्त समूह: " + orUnavailable(bloodGroup) + ".");
+        hi.add("एलर्जी: " + listOrUnavailable(allergies) + ".");
+        hi.add("मेडिकल स्थितियाँ: " + listOrUnavailable(conditions) + ".");
         hi.add("स्थान: " + locationLine + ".");
+        hi.add("स्थान दोहराया जा रहा है: " + locationLine + ".");
         hi.add("कृपया तुरंत प्रतिक्रिया दें।");
 
         List<Segment> out = new ArrayList<>();
         out.add(new Segment("en-IN", String.join(" ", en)));
         out.add(new Segment("hi-IN", String.join(" ", hi)));
-        if (regional != null && !"hi-IN".equals(regional.languageCode())
+
+        if (regional == null) return out;
+        if ("mr-IN".equals(regional.languageCode())) {
+            // Marathi: FULL detail mirroring English and Hindi.
+            List<String> mr = new ArrayList<>();
+            mr.add("ResQAI आपत्कालीन इशारा.");
+            mr.add("एका द्रष्ट्याने " + mrCategory(category) + " यांची नोंद केली आहे.");
+            mr.add("व्यक्ती: " + name + ".");
+            mr.add("रक्तगट: " + orUnavailable(bloodGroup) + ".");
+            mr.add("ऍलर्जी: " + listOrUnavailable(allergies) + ".");
+            mr.add("आरोग्याच्या स्थिती: " + listOrUnavailable(conditions) + ".");
+            mr.add("घटनास्थळ: " + locationLine + ".");
+            mr.add("स्थान पुन्हा सांगत आहे: " + locationLine + ".");
+            mr.add("कृपया लगेच प्रतिसाद द्या.");
+            out.add(new Segment("mr-IN", String.join(" ", mr)));
+        } else if (!"hi-IN".equals(regional.languageCode())
             && REGIONAL_OPENERS.containsKey(regional.languageCode())) {
-            String coords = (lat != null && lon != null)
-                ? lat + ", " + lon : "unavailable";
+            // Other regional languages: short opener (EN + HI carry all facts).
             String text = String.format(
-                REGIONAL_OPENERS.get(regional.languageCode()), categoryWord, coords);
+                REGIONAL_OPENERS.get(regional.languageCode()), categoryWord, locationLine);
             out.add(new Segment(regional.languageCode(), text));
         }
         return out;
+    }
+
+    private static String mrCategory(String category) {
+        return switch (category == null ? "OTHER" : category) {
+            case "ROAD_ACCIDENT", "ACCIDENT" -> "रस्ता अपघात";
+            case "UNCONSCIOUS" -> "बेशुद्ध व्यक्ती";
+            case "BREATHING_DIFFICULTY" -> "श्वास घेण्यास त्रास";
+            case "SEVERE_BLEEDING" -> "तीव्र रक्तस्राव";
+            case "CARDIAC_EMERGENCY" -> "हृदयविकाराचा झटका";
+            case "BURN_INJURY" -> "जळजळ";
+            case "FALL_INJURY" -> "पडणे किंवा दुखापत";
+            case "FIRE" -> "आग";
+            default -> "आपत्कालीन परिस्थिती";
+        };
     }
 
     private static String hiCategory(String category) {
@@ -109,12 +142,15 @@ public class EmergencyCallScriptService {
         };
     }
 
-    private static String locationWords(Double lat, Double lon) {
-        if (lat == null || lon == null) {
-            return "coordinates unavailable";
+    private static String locationWords(String placeName, Double lat, Double lon) {
+        // A place name people can act on; coordinates only as last resort.
+        if (placeName != null && !placeName.isBlank()) {
+            return placeName.trim();
         }
-        // 3 decimals ~= 100 m precision; fewer spoken digits, shorter audio.
-        return String.format("%.3f, %.3f", lat, lon);
+        if (lat == null || lon == null) {
+            return "location unavailable";
+        }
+        return String.format("near coordinates %.3f, %.3f", lat, lon);
     }
 
     private static String orUnavailable(String value) {

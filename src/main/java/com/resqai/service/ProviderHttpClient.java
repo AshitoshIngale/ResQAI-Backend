@@ -27,6 +27,17 @@ public interface ProviderHttpClient {
     ProviderResponse send(String method, String url, String contentType,
                           String authHeader, byte[] body) throws Exception;
 
+    /**
+     * Same as send() but with an explicit User-Agent (required by APIs such
+     * as OpenStreetMap Nominatim). Default delegates; only the real transport
+     * needs the header, test fakes are unaffected.
+     */
+    default ProviderResponse sendWithUserAgent(String method, String url, String contentType,
+                                               String authHeader, String userAgent,
+                                               byte[] body) throws Exception {
+        return send(method, url, contentType, authHeader, body);
+    }
+
     /** Real implementation with hard timeouts — a hung provider never hangs SOS. */
     class Simple implements ProviderHttpClient {
 
@@ -43,6 +54,20 @@ public interface ProviderHttpClient {
             this.requestTimeout = requestTimeout;
         }
 
+        private String pendingUserAgent;
+
+        @Override
+        public ProviderResponse sendWithUserAgent(String method, String url, String contentType,
+                                                  String authHeader, String userAgent,
+                                                  byte[] body) throws Exception {
+            this.pendingUserAgent = userAgent;
+            try {
+                return send(method, url, contentType, authHeader, body);
+            } finally {
+                this.pendingUserAgent = null;
+            }
+        }
+
         @Override
         public ProviderResponse send(String method, String url, String contentType,
                                      String authHeader, byte[] body) throws Exception {
@@ -53,6 +78,8 @@ public interface ProviderHttpClient {
             if (authHeader != null && !authHeader.isBlank()) {
                 builder.header("Authorization", authHeader);
             }
+            builder.header("User-Agent",
+                pendingUserAgent == null ? "ResQAI-Backend/1.0" : pendingUserAgent);
             builder.method(method, HttpRequest.BodyPublishers.ofByteArray(
                 body == null ? new byte[0] : body));
             HttpResponse<byte[]> response =

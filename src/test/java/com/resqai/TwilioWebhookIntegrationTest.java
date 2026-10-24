@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -73,6 +74,7 @@ class TwilioWebhookIntegrationTest {
         report.setCategory("ROAD_ACCIDENT");
         report.setLatitude(16.70);
         report.setLongitude(74.24);
+        report.setLocationName("Rajarampuri, Kolhapur, Maharashtra 416013");
         reports.save(report);
 
         String url = "https://resqai-backend-n128.onrender.com/api/v1/twiml/incident/"
@@ -94,7 +96,8 @@ class TwilioWebhookIntegrationTest {
         assertTrue(body.contains("<Say language=\"hi-IN\""));
         assertTrue(body.contains("road accident"));
         assertTrue(body.contains("Webhook Test"));
-        assertTrue(body.contains("16.700, 74.240"));
+        assertTrue(body.contains("Rajarampuri, Kolhapur, Maharashtra 416013"));
+        assertFalse(body.contains("16.700")); // coordinates are not spoken when a place exists
 
         // Unsigned request is rejected — medical speech never leaks.
         mockMvc.perform(post("/api/v1/twiml/incident/" + report.getReportId())

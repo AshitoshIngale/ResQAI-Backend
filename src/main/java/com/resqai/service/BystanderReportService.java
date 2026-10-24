@@ -53,6 +53,7 @@ public class BystanderReportService {
     private final MedicalAccessAuditRepository audit;
     private final EmergencyCallScriptService scriptService;
     private final SarvamTtsService ttsService;
+    private final ReverseGeocodeService geocoder;
 
     /** Destination for the automated emergency call (server-managed, env-only). */
     @org.springframework.beans.factory.annotation.Value("${resqai.emergency-call.destination:}")
@@ -71,7 +72,8 @@ public class BystanderReportService {
                                   TwilioVoiceService voice,
                                   MedicalAccessAuditRepository audit,
                                   EmergencyCallScriptService scriptService,
-                                  SarvamTtsService ttsService) {
+                                  SarvamTtsService ttsService,
+                                  ReverseGeocodeService geocoder) {
         this.reports = reports;
         this.users = users;
         this.incidents = incidents;
@@ -82,6 +84,7 @@ public class BystanderReportService {
         this.audit = audit;
         this.scriptService = scriptService;
         this.ttsService = ttsService;
+        this.geocoder = geocoder;
     }
 
     /**
@@ -158,6 +161,17 @@ public class BystanderReportService {
         // provider outage can never lose the report, and the reportId exists
         // for idempotent retries.
         BystanderReportDocument saved = reports.save(report);
+        // Resolve a human-readable place (area, city, pincode) ONCE and
+        // persist it: the spoken script needs it and every later reader
+        // (webhook, retries) must see the SAME name for cache consistency.
+        if (saved.getLatitude() != null && saved.getLongitude() != null) {
+            try {
+                saved.setLocationName(geocoder.resolvePlaceName(
+                    saved.getLatitude(), saved.getLongitude()));
+            } catch (Exception e) {
+                // Speech falls back to spoken coordinates; never blocks.
+            }
+        }
         if (verified) {
             attemptAssociation(saved, victim.get());
             notifyVictimContacts(saved, victim.get());
@@ -263,7 +277,8 @@ public class BystanderReportService {
             StateLanguageResolver.Resolution regional =
                 StateLanguageResolver.resolve(report.getLatitude(), report.getLongitude());
             List<EmergencyCallScriptService.Segment> segments = scriptService.buildScript(
-                report.getCategory(), report.getLatitude(), report.getLongitude(),
+                report.getCategory(), report.getLocationName(),
+                report.getLatitude(), report.getLongitude(),
                 summary.emergencyName, summary.bloodGroup, summary.allergies,
                 summary.medicalConditions, regional);
             ttsService.prewarm(segments.stream()

@@ -49,6 +49,9 @@ public class BystanderReportDocument {
     private Double locationAccuracyMeters;
     private Instant locationCapturedAt;
 
+    /** Human-readable reverse-geocoded place (e.g. "Kolhapur, Maharashtra 416013"). */
+    private String locationName;
+
     private Instant clientCreatedAt;
 
     private String source;
@@ -127,6 +130,9 @@ public class BystanderReportDocument {
     private String callSid;
 
     private Instant callAttemptedAt;
+
+    public String getLocationName() { return locationName; }
+    public void setLocationName(String locationName) { this.locationName = locationName; }
 
     public String getCallStatus() { return callStatus; }
     public void setCallStatus(String callStatus) { this.callStatus = callStatus; }

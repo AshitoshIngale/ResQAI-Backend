@@ -76,30 +76,45 @@ class EmergencyCallFlowTest {
     @Test
     void scriptSpeaksOnlyFactsAndNamesMissingInformation() {
         var segments = scripts.buildScript(
-            "ROAD_ACCIDENT", 18.5204, 73.8567,
+            "ROAD_ACCIDENT", "Rajarampuri, Kolhapur, Maharashtra 416013", 18.5204, 73.8567,
             "Asha Patil", "O+", List.of("penicillin"), List.of("diabetes"),
             StateLanguageResolver.resolve(18.5204, 73.8567));
-        assertEquals(3, segments.size()); // EN + HI + mr-IN opener
+        assertEquals(3, segments.size()); // EN + HI + full mr-IN
         String en = segments.get(0).text();
         assertTrue(en.contains("ResQAI automated emergency alert"));
         assertTrue(en.contains("road accident"));
-        assertTrue(en.contains("18.520, 73.857"));
+        assertTrue(en.contains("Rajarampuri, Kolhapur, Maharashtra 416013"));
         assertTrue(en.contains("Asha Patil"));
         assertTrue(en.contains("O+"));
         assertTrue(en.contains("penicillin"));
         assertTrue(en.contains("diabetes"));
-        // Location is repeated before the closing instruction, as required.
-        assertTrue(en.lastIndexOf("18.520, 73.857") > en.indexOf("Location: "));
-        assertTrue(en.contains("Please respond immediately."));
+        // Place name repeated before the closing instruction, never coordinates.
+        assertTrue(en.lastIndexOf("416013") > en.indexOf("Location: "));
+        assertFalse(en.contains("18.520"));
+
+        // Hindi: FULL detail with the same facts and the location repeated.
+        String hi = segments.get(1).text();
+        assertTrue(hi.contains("रक्त समूह: O+"));
+        assertTrue(hi.contains("एलर्जी: penicillin"));
+        assertTrue(hi.contains("Kolhapur"));
+        assertTrue(hi.contains("स्थान दोहराया"));
+
+        // Marathi: FULL detail with the same facts and the location repeated.
+        String mr = segments.get(2).text();
+        assertTrue(mr.contains("रक्तगट: O+"));
+        assertTrue(mr.contains("ऍलर्जी: penicillin"));
+        assertTrue(mr.contains("Kolhapur"));
+        assertTrue(mr.contains("स्थान पुन्हा"));
+        assertTrue(mr.contains("रस्ता अपघात"));
     }
 
     @Test
     void scriptNeverInventsMissingMedicalFields() {
         var segments = scripts.buildScript(
-            "UNCONSCIOUS", null, null, null, null, null, null, null);
+            "UNCONSCIOUS", null, null, null, null, null, null, null, null);
         assertEquals(2, segments.size()); // no regional segment without coordinates
         String en = segments.get(0).text();
-        assertTrue(en.contains("coordinates unavailable"));
+        assertTrue(en.contains("location unavailable"));
         assertTrue(en.contains("Blood group: not available"));
         assertTrue(en.contains("Allergies: not available"));
         assertFalse(en.contains("O+"));
@@ -284,7 +299,7 @@ class EmergencyCallFlowTest {
         // synthesized audio for every language segment.
         SarvamTtsService realTts = new SarvamTtsService(ttsOk, "key");
         for (EmergencyCallScriptService.Segment segment :
-                scripts.buildScript("ROAD_ACCIDENT", 18.5204, 73.8567, "Asha Patil",
+                scripts.buildScript("ROAD_ACCIDENT", null, 18.5204, 73.8567, "Asha Patil",
                     "O+", List.of("penicillin"), null,
                     StateLanguageResolver.resolve(18.5204, 73.8567))) {
             assertEquals(SarvamTtsService.Status.SYNTHESIZED,
@@ -342,7 +357,8 @@ class EmergencyCallFlowTest {
             mock(TwilioVoiceService.class),
             mock(MedicalAccessAuditRepository.class),
             mock(EmergencyCallScriptService.class),
-            mock(SarvamTtsService.class));
+            mock(SarvamTtsService.class),
+            mock(com.resqai.service.ReverseGeocodeService.class));
         // Inject config values (field injection via reflection as Spring would).
         org.springframework.test.util.ReflectionTestUtils.setField(
             service, "emergencyCallDestination", "+919373129599");
@@ -377,7 +393,8 @@ class EmergencyCallFlowTest {
             mock(TwilioVoiceService.class),
             mock(MedicalAccessAuditRepository.class),
             mock(EmergencyCallScriptService.class),
-            mock(SarvamTtsService.class));
+            mock(SarvamTtsService.class),
+            mock(com.resqai.service.ReverseGeocodeService.class));
         org.springframework.test.util.ReflectionTestUtils.setField(
             service, "emergencyCallDestination", "not-a-number");
         org.springframework.test.util.ReflectionTestUtils.setField(
@@ -412,7 +429,8 @@ class EmergencyCallFlowTest {
             reports, users, mock(com.resqai.repository.IncidentRepository.class),
             profiles, mock(com.resqai.repository.EmergencyContactRepository.class),
             mock(com.resqai.service.TwilioAlertService.class), mock(TwilioVoiceService.class),
-            audit, mock(EmergencyCallScriptService.class), mock(SarvamTtsService.class));
+            audit, mock(EmergencyCallScriptService.class), mock(SarvamTtsService.class),
+            mock(com.resqai.service.ReverseGeocodeService.class));
 
         BystanderDtos.VictimSummary summary =
             service.buildAuthorizedSummary(verifiedReport(), victim);
@@ -427,5 +445,32 @@ class EmergencyCallFlowTest {
         verify(audit).save(captor.capture());
         assertEquals("BYSTANDER_REPORT_DISCLOSURE", captor.getValue().getAction());
         assertEquals("r-1", captor.getValue().getReportId());
+    }
+
+    // ---------------- Reverse geocoding ----------------
+
+    @Test
+    void reverseGeocodeProducesReadablePlaceWithPincode() {
+        // Nominatim-style response with area, city, state and postcode.
+        ProviderHttpClient nominatim = (m, u, c, a, b) ->
+            new ProviderHttpClient.ProviderResponse(200,
+                "{\"address\":{\"suburb\":\"Rajarampuri\",\"city\":\"Kolhapur\","
+                    + "\"state\":\"Maharashtra\",\"postcode\":\"416013\"}}");
+        var geo = new com.resqai.service.ReverseGeocodeService(nominatim);
+        assertEquals("Rajarampuri, Kolhapur, Maharashtra 416013",
+            geo.resolvePlaceName(16.70, 74.24));
+        // Second call is served from cache (same rounded point).
+        assertEquals("Rajarampuri, Kolhapur, Maharashtra 416013",
+            geo.resolvePlaceName(16.7001, 74.2401));
+    }
+
+    @Test
+    void reverseGeocodeFailsHonestlyToNull() {
+        var geo = new com.resqai.service.ReverseGeocodeService(ttsTransport(503, "busy"));
+        assertNull(geo.resolvePlaceName(16.70, 74.24));
+        // Network exception also resolves to null, never a fabricated place.
+        ProviderHttpClient throwing = (m, u, c, a, b) -> { throw new java.io.IOException("down"); };
+        assertNull(new com.resqai.service.ReverseGeocodeService(throwing)
+            .resolvePlaceName(10.0, 10.0));
     }
 }
