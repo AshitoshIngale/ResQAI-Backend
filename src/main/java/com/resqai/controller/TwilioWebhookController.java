@@ -16,7 +16,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -73,11 +72,10 @@ public class TwilioWebhookController {
     public ResponseEntity<String> twiml(
             @PathVariable String reportId,
             @RequestHeader(value = "X-Twilio-Signature", required = false) String signature,
-            @RequestBody(required = false) Map<String, String> formParams,
-            @RequestParam Map<String, String> queryParams) {
+            @RequestParam Map<String, String> params) {
 
         if (!voice.shouldValidateSignatures()) return ResponseEntity.notFound().build();
-        if (!signatureValid(signature, "/api/v1/twiml/incident/" + reportId, formParams, queryParams)) {
+        if (!signatureValid(signature, "/api/v1/twiml/incident/" + reportId, params)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
@@ -124,11 +122,9 @@ public class TwilioWebhookController {
             @PathVariable String reportId,
             @PathVariable String cacheKey,
             @RequestHeader(value = "X-Twilio-Signature", required = false) String signature,
-            @RequestBody(required = false) Map<String, String> formParams,
-            @RequestParam Map<String, String> queryParams) {
+            @RequestParam Map<String, String> params) {
         if (!voice.shouldValidateSignatures()) return ResponseEntity.notFound().build();
-        if (!signatureValid(signature, "/api/v1/tts/incident/" + reportId + "/" + cacheKey,
-                formParams, queryParams)) {
+        if (!signatureValid(signature, "/api/v1/tts/incident/" + reportId + "/" + cacheKey, params)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
         byte[] wav = tts.cachedAudio(cacheKey);
@@ -144,13 +140,12 @@ public class TwilioWebhookController {
     public ResponseEntity<Void> status(
             @PathVariable String reportId,
             @RequestHeader(value = "X-Twilio-Signature", required = false) String signature,
-            @RequestBody(required = false) Map<String, String> formParams,
-            @RequestParam Map<String, String> queryParams) {
+            @RequestParam Map<String, String> params) {
         if (!voice.shouldValidateSignatures()) return ResponseEntity.notFound().build();
-        if (!signatureValid(signature, "/api/v1/twilio/status/" + reportId, formParams, queryParams)) {
+        if (!signatureValid(signature, "/api/v1/twilio/status/" + reportId, params)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
-        String callStatus = formParams == null ? null : formParams.get("CallStatus");
+        String callStatus = params == null ? null : params.get("CallStatus");
         reports.findByReportId(reportId).ifPresent(report -> {
             report.setCallDetail("twilio call status: " + (callStatus == null ? "unknown" : callStatus));
             report.setServerUpdatedAt(java.time.Instant.now());
@@ -187,11 +182,8 @@ public class TwilioWebhookController {
      * the Calls API (no query string), and the signed parameter set is every
      * request parameter (query + form body, as Spring merges them here).
      */
-    private boolean signatureValid(String signature, String path,
-                                   Map<String, String> formParams, Map<String, String> queryParams) {
-        Map<String, String> all = new HashMap<>();
-        if (queryParams != null) all.putAll(queryParams);
-        if (formParams != null) all.putAll(formParams);
+    private boolean signatureValid(String signature, String path, Map<String, String> params) {
+        Map<String, String> all = params == null ? new HashMap<>() : params;
         return voice.isSignatureValid(signature, publicUrl(path), all);
     }
 

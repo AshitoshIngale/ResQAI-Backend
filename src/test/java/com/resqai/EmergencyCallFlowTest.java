@@ -264,11 +264,11 @@ class EmergencyCallFlowTest {
         Map<String, String> form = new HashMap<>();
         form.put("CallSid", "CA1");
         // Unsigned request is rejected even though everything else is valid.
-        assertEquals(403, controller.twiml("r-1", null, form, new HashMap<>()).getStatusCodeValue());
+        assertEquals(403, controller.twiml("r-1", null, form).getStatusCodeValue());
 
         String url = "https://resqai-backend-n128.onrender.com/api/v1/twiml/incident/r-1";
         String signature = sign(url, form, "token");
-        var response = controller.twiml("r-1", signature, form, new HashMap<>());
+        var response = controller.twiml("r-1", signature, form);
         assertEquals(200, response.getStatusCodeValue());
         String xml = response.getBody();
         // All three language segments are played as synthesized audio.
@@ -295,7 +295,7 @@ class EmergencyCallFlowTest {
 
         Map<String, String> form = new HashMap<>();
         String url = "https://resqai-backend-n128.onrender.com/api/v1/twiml/incident/r-1";
-        var response = controller.twiml("r-1", sign(url, form, "token"), form, new HashMap<>());
+        var response = controller.twiml("r-1", sign(url, form, "token"), form);
         String xml = response.getBody();
         // EN + HI spoken by Twilio Say; regional segment skipped, not misread.
         assertTrue(xml.contains("<Say language=\"en-IN\""));
