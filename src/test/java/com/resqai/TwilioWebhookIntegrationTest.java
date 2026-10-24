@@ -94,7 +94,7 @@ class TwilioWebhookIntegrationTest {
         assertTrue(body.contains("<Say language=\"hi-IN\""));
         assertTrue(body.contains("road accident"));
         assertTrue(body.contains("Webhook Test"));
-        assertTrue(body.contains("latitude 16.7, longitude 74.24"));
+        assertTrue(body.contains("16.700, 74.240"));
 
         // Unsigned request is rejected — medical speech never leaks.
         mockMvc.perform(post("/api/v1/twiml/incident/" + report.getReportId())

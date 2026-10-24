@@ -59,28 +59,27 @@ public class EmergencyCallScriptService {
         String locationLine = locationWords(lat, lon);
         String name = orUnavailable(victimName);
 
+        // CONCISE scripts: spoken audio runs real-time, so the full
+        // three-language call stays near 30 seconds. English carries every
+        // authorized fact; Hindi is the compact alert; the regional opener
+        // is one line. Missing fields stay honestly absent.
         List<String> en = new ArrayList<>();
-        en.add("This is ResQAI's automated emergency reporting assistant.");
-        en.add("A bystander reported a " + categoryWord + ".");
-        en.add("Incident location: " + locationLine + ".");
-        en.add("Victim identification: " + name + ".");
+        en.add("ResQAI automated emergency alert.");
+        en.add("Bystander reports " + categoryWord + ".");
+        en.add("Victim: " + name + ".");
         en.add("Blood group: " + orUnavailable(bloodGroup) + ".");
-        en.add("Known allergies: " + listOrUnavailable(allergies) + ".");
-        en.add("Relevant medical conditions: " + listOrUnavailable(conditions) + ".");
-        en.add("Repeating the incident location: " + locationLine + ".");
-        en.add("Summary: " + categoryWord + " reported for " + name
-            + " at " + locationLine + ". Please respond.");
+        en.add("Allergies: " + listOrUnavailable(allergies) + ".");
+        en.add("Conditions: " + listOrUnavailable(conditions) + ".");
+        en.add("Location: " + locationLine + ".");
+        en.add("Location again: " + locationLine + ".");
+        en.add("Please respond immediately.");
 
         List<String> hi = new ArrayList<>();
-        hi.add("यह ResQAI का स्वचालित आपातकालीन रिपोर्टिंग सहायक है।");
-        hi.add("एक द्रष्टा ने " + hiCategory(category) + " की सूचना दी है।");
-        hi.add("घटना स्थल: " + locationLine + ".");
+        hi.add("ResQAI आपातकालीन अलर्ट।");
+        hi.add(hiCategory(category) + " की सूचना है।");
         hi.add("पीड़ित: " + name + ".");
-        hi.add("रक्त समूह: " + orUnavailable(bloodGroup) + ".");
-        hi.add("ज्ञात एलर्जी: " + listOrUnavailable(allergies) + ".");
-        hi.add("मेडिकल स्थितियाँ: " + listOrUnavailable(conditions) + ".");
-        hi.add("घटना स्थल दोहराया जा रहा है: " + locationLine + ".");
-        hi.add("सारांश: " + hiCategory(category) + ", स्थान " + locationLine + ". कृपया तुरंत प्रतिक्रिया दें।");
+        hi.add("स्थान: " + locationLine + ".");
+        hi.add("कृपया तुरंत प्रतिक्रिया दें।");
 
         List<Segment> out = new ArrayList<>();
         out.add(new Segment("en-IN", String.join(" ", en)));
@@ -114,7 +113,8 @@ public class EmergencyCallScriptService {
         if (lat == null || lon == null) {
             return "coordinates unavailable";
         }
-        return "latitude " + lat + ", longitude " + lon;
+        // 3 decimals ~= 100 m precision; fewer spoken digits, shorter audio.
+        return String.format("%.3f, %.3f", lat, lon);
     }
 
     private static String orUnavailable(String value) {

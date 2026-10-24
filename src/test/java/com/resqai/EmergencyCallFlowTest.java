@@ -81,15 +81,16 @@ class EmergencyCallFlowTest {
             StateLanguageResolver.resolve(18.5204, 73.8567));
         assertEquals(3, segments.size()); // EN + HI + mr-IN opener
         String en = segments.get(0).text();
-        assertTrue(en.contains("ResQAI's automated emergency reporting assistant"));
+        assertTrue(en.contains("ResQAI automated emergency alert"));
         assertTrue(en.contains("road accident"));
-        assertTrue(en.contains("latitude 18.5204, longitude 73.8567"));
+        assertTrue(en.contains("18.520, 73.857"));
         assertTrue(en.contains("Asha Patil"));
         assertTrue(en.contains("O+"));
         assertTrue(en.contains("penicillin"));
         assertTrue(en.contains("diabetes"));
-        // Location repeated before the summary, as required.
-        assertTrue(en.indexOf("Repeating the incident location") < en.indexOf("Summary:"));
+        // Location is repeated before the closing instruction, as required.
+        assertTrue(en.lastIndexOf("18.520, 73.857") > en.indexOf("Location: "));
+        assertTrue(en.contains("Please respond immediately."));
     }
 
     @Test
@@ -100,7 +101,7 @@ class EmergencyCallFlowTest {
         String en = segments.get(0).text();
         assertTrue(en.contains("coordinates unavailable"));
         assertTrue(en.contains("Blood group: not available"));
-        assertTrue(en.contains("Known allergies: not available"));
+        assertTrue(en.contains("Allergies: not available"));
         assertFalse(en.contains("O+"));
     }
 
