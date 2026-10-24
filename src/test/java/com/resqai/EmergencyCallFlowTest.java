@@ -245,6 +245,7 @@ class EmergencyCallFlowTest {
         UserRepository users = mock(UserRepository.class);
         EmergencyProfileRepository profiles = mock(EmergencyProfileRepository.class);
         UserDocument victim = new UserDocument();
+        victim.setId("u1");
         victim.setFullName("Asha Patil");
         when(users.findByEmergencyCode("abcdefghijklmnopqrstuv")).thenReturn(Optional.of(victim));
         EmergencyProfileDocument profile = new EmergencyProfileDocument();
@@ -271,10 +272,33 @@ class EmergencyCallFlowTest {
         var response = controller.twiml("r-1", signature, form);
         assertEquals(200, response.getStatusCodeValue());
         String xml = response.getBody();
-        // All three language segments are played as synthesized audio.
-        assertEquals(3, xml.split("<Play>", -1).length - 1);
-        assertFalse(xml.contains("<Say")); // synthesis worked, no fallback
-        assertFalse(xml.contains("Asha Patil")); // medical data only in TTS audio URL key, not in TwiML
+        // INSTANT response: cold cache -> Twilio <Say> for EN + HI, and the
+        // regional segment warms in the background. The webhook must NEVER
+        // wait on synthesis (Twilio aborts webhooks after ~15 s).
+        assertTrue(xml.contains("<Say language=\"en-IN\""));
+        assertTrue(xml.contains("<Say language=\"hi-IN\""));
+        assertFalse(xml.contains("<Play>"));
+
+        // After the background warm completes, the SAME request serves
+        // synthesized audio for every language segment.
+        SarvamTtsService realTts = new SarvamTtsService(ttsOk, "key");
+        for (EmergencyCallScriptService.Segment segment :
+                scripts.buildScript("ROAD_ACCIDENT", 18.5204, 73.8567, "Asha Patil",
+                    "O+", List.of("penicillin"), null,
+                    StateLanguageResolver.resolve(18.5204, 73.8567))) {
+            assertEquals(SarvamTtsService.Status.SYNTHESIZED,
+                realTts.synthesize(segment.text(), segment.languageCode()).status());
+        }
+        TwilioWebhookController warmController = new TwilioWebhookController(
+            reports, users, profiles,
+            new TwilioVoiceService(ttsOk, "AC1", "token", "+1555"),
+            realTts, scripts);
+        var warmResponse = warmController.twiml("r-1", signature, form);
+        String warmXml = warmResponse.getBody();
+        assertEquals(3, warmXml.split("<Play>", -1).length - 1);
+        assertFalse(warmXml.contains("<Say"));
+        // Medical data lives only inside TTS audio, never in the TwiML itself.
+        assertFalse(warmXml.contains("Asha Patil"));
     }
 
     @Test
@@ -316,7 +340,8 @@ class EmergencyCallFlowTest {
             mock(com.resqai.service.TwilioAlertService.class),
             mock(TwilioVoiceService.class),
             mock(MedicalAccessAuditRepository.class),
-            mock(EmergencyCallScriptService.class));
+            mock(EmergencyCallScriptService.class),
+            mock(SarvamTtsService.class));
         // Inject config values (field injection via reflection as Spring would).
         org.springframework.test.util.ReflectionTestUtils.setField(
             service, "emergencyCallDestination", "+919373129599");
@@ -350,7 +375,8 @@ class EmergencyCallFlowTest {
             mock(com.resqai.service.TwilioAlertService.class),
             mock(TwilioVoiceService.class),
             mock(MedicalAccessAuditRepository.class),
-            mock(EmergencyCallScriptService.class));
+            mock(EmergencyCallScriptService.class),
+            mock(SarvamTtsService.class));
         org.springframework.test.util.ReflectionTestUtils.setField(
             service, "emergencyCallDestination", "not-a-number");
         org.springframework.test.util.ReflectionTestUtils.setField(
@@ -385,7 +411,7 @@ class EmergencyCallFlowTest {
             reports, users, mock(com.resqai.repository.IncidentRepository.class),
             profiles, mock(com.resqai.repository.EmergencyContactRepository.class),
             mock(com.resqai.service.TwilioAlertService.class), mock(TwilioVoiceService.class),
-            audit, mock(EmergencyCallScriptService.class));
+            audit, mock(EmergencyCallScriptService.class), mock(SarvamTtsService.class));
 
         BystanderDtos.VictimSummary summary =
             service.buildAuthorizedSummary(verifiedReport(), victim);

@@ -54,6 +54,40 @@ public class SarvamTtsService {
         return cache.get(cacheKey);
     }
 
+    /**
+     * Cache-only synthesis lookup for the TwiML webhook: returns the cached
+     * WAV or null. NEVER touches the network — Twilio aborts webhooks that
+     * take longer than 15 seconds, so the webhook must answer instantly and
+     * fall back to Twilio's own <Say> voices for cold segments.
+     */
+    public TtsResult synthesizeCachedOnly(String text, String languageCode) {
+        byte[] wav = cache.get(cacheKey(text, languageCode));
+        if (wav == null) {
+            return new TtsResult(Status.FAILED, null, "not cached", Instant.now());
+        }
+        return new TtsResult(Status.SYNTHESIZED, wav, "cache", Instant.now());
+    }
+
+    private static final java.util.concurrent.ExecutorService WARMER =
+        java.util.concurrent.Executors.newFixedThreadPool(3, r -> {
+            Thread t = new Thread(r, "sarvam-tts-warmer");
+            t.setDaemon(true);
+            return t;
+        });
+
+    /**
+     * Warms the cache for several segments in parallel (used when a call is
+     * placed — the phone rings for seconds before Twilio fetches TwiML, which
+     * is enough time to synthesize all languages once).
+     */
+    public void prewarm(Iterable<String[]> textAndLanguagePairs) {
+        for (String[] pair : textAndLanguagePairs) {
+            String text = pair[0], lang = pair[1];
+            if (cache.containsKey(cacheKey(text, lang))) continue;
+            WARMER.submit(() -> synthesize(text, lang));
+        }
+    }
+
     public boolean isConfigured() {
         return !apiKey.isBlank();
     }

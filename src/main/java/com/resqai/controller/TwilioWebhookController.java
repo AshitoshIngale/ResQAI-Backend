@@ -94,23 +94,35 @@ public class TwilioWebhookController {
             report.getCategory(), report.getLatitude(), report.getLongitude(),
             medical.name, medical.bloodGroup, medical.allergies, medical.conditions, regional);
 
+        // Twilio aborts webhooks after ~15 seconds. This handler therefore
+        // NEVER calls the network: cached Sarvam audio -> <Play>; anything
+        // cold -> Twilio's built-in <Say> for EN/HI (same words, instant),
+        // and a background warm so the NEXT fetch has the regional audio.
+        List<String[]> toWarm = new java.util.ArrayList<>();
         StringBuilder twiml = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n");
         twiml.append("  <Pause length=\"1\"/>\n");
         for (EmergencyCallScriptService.Segment segment : segments) {
-            SarvamTtsService.TtsResult audio = tts.synthesize(segment.text(), segment.languageCode());
+            SarvamTtsService.TtsResult audio =
+                tts.synthesizeCachedOnly(segment.text(), segment.languageCode());
             if (audio.status() == SarvamTtsService.Status.SYNTHESIZED) {
-                // Audio is fetched through the signed TTS endpoint below.
                 String key = SarvamTtsService.cacheKey(segment.text(), segment.languageCode());
                 twiml.append("  <Play>")
                     .append(publicUrl("/api/v1/tts/incident/" + reportId + "/" + key))
                     .append("</Play>\n");
-            } else if ("en-IN".equals(segment.languageCode()) || "hi-IN".equals(segment.languageCode())) {
-                // Honest fallback: Twilio's own voice reads the SAME script.
-                twiml.append("  <Say language=\"").append(segment.languageCode()).append("\">")
-                    .append(escapeXml(segment.text())).append("</Say>\n");
+            } else {
+                toWarm.add(new String[]{segment.text(), segment.languageCode()});
+                if ("en-IN".equals(segment.languageCode()) || "hi-IN".equals(segment.languageCode())) {
+                    // Instant fallback: Twilio's own voice reads the SAME script.
+                    twiml.append("  <Say language=\"").append(segment.languageCode()).append("\">")
+                        .append(escapeXml(segment.text())).append("</Say>\n");
+                }
+                // Regional segment without cached audio is skipped for THIS
+                // fetch — never read in a wrong-language voice; EN + HI
+                // already carry every fact, and the warm makes it play next time.
             }
-            // Regional segment without synthesis is skipped — never read in a
-            // wrong-language voice; EN + HI already carry every fact.
+        }
+        if (!toWarm.isEmpty()) {
+            tts.prewarm(toWarm);
         }
         twiml.append("</Response>");
         return ResponseEntity.ok().contentType(MediaType.APPLICATION_XML).body(twiml.toString());

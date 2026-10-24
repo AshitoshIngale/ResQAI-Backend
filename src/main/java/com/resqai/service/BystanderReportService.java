@@ -52,6 +52,7 @@ public class BystanderReportService {
     private final TwilioVoiceService voice;
     private final MedicalAccessAuditRepository audit;
     private final EmergencyCallScriptService scriptService;
+    private final SarvamTtsService ttsService;
 
     /** Destination for the automated emergency call (server-managed, env-only). */
     @org.springframework.beans.factory.annotation.Value("${resqai.emergency-call.destination:}")
@@ -69,7 +70,8 @@ public class BystanderReportService {
                                   TwilioAlertService twilio,
                                   TwilioVoiceService voice,
                                   MedicalAccessAuditRepository audit,
-                                  EmergencyCallScriptService scriptService) {
+                                  EmergencyCallScriptService scriptService,
+                                  SarvamTtsService ttsService) {
         this.reports = reports;
         this.users = users;
         this.incidents = incidents;
@@ -79,6 +81,7 @@ public class BystanderReportService {
         this.voice = voice;
         this.audit = audit;
         this.scriptService = scriptService;
+        this.ttsService = ttsService;
     }
 
     /**
@@ -173,19 +176,7 @@ public class BystanderReportService {
      */
     public BystanderDtos.VictimSummary buildAuthorizedSummary(
             BystanderReportDocument report, UserDocument victim) {
-        BystanderDtos.VictimSummary summary = new BystanderDtos.VictimSummary();
-        Optional<com.resqai.model.EmergencyProfileDocument> profile =
-            profiles.findByUserId(victim.getId());
-        profile.ifPresent(p -> {
-            summary.bloodGroup = blankToNull(p.getBloodGroup());
-            summary.allergies = nonEmpty(p.getAllergies());
-            summary.medicalConditions = nonEmpty(p.getMedicalConditions());
-            summary.currentMedications = nonEmpty(p.getCurrentMedications());
-            if (p.getEmergencyContacts() != null && !p.getEmergencyContacts().isEmpty()) {
-                summary.emergencyContactPhone = p.getEmergencyContacts().get(0).getPhone();
-            }
-        });
-        summary.emergencyName = blankToNull(victim.getFullName());
+        BystanderDtos.VictimSummary summary = loadAuthorizedFields(victim);
         try {
             audit.save(new com.resqai.model.MedicalAccessAuditDocument(
                 report.getReportId(), report.getEmergencyCode(),
@@ -232,9 +223,54 @@ public class BystanderReportService {
             report.setCallDetail(result.detail());
             report.setCallSid(result.callSid());
             report.setCallAttemptedAt(result.attemptedAt());
+            if (result.status() == TwilioVoiceService.Status.INITIATED) {
+                // The phone rings for seconds before Twilio fetches TwiML -
+                // warm the speech cache in parallel so the call plays the
+                // synthesized audio instead of the <Say> fallback.
+                prewarmSpeech(report, victim);
+            }
         } catch (Exception e) {
             report.setCallStatus("FAILED");
             report.setCallDetail("call initiation error (details omitted)");
+        }
+    }
+
+    /**
+     * Loads the authorized medical fields WITHOUT auditing — for internal
+     * speech preparation of an already-audited disclosure.
+     */
+    private BystanderDtos.VictimSummary loadAuthorizedFields(UserDocument victim) {
+        BystanderDtos.VictimSummary summary = new BystanderDtos.VictimSummary();
+        Optional<com.resqai.model.EmergencyProfileDocument> profile =
+            profiles.findByUserId(victim.getId());
+        profile.ifPresent(p -> {
+            summary.bloodGroup = blankToNull(p.getBloodGroup());
+            summary.allergies = nonEmpty(p.getAllergies());
+            summary.medicalConditions = nonEmpty(p.getMedicalConditions());
+            summary.currentMedications = nonEmpty(p.getCurrentMedications());
+            if (p.getEmergencyContacts() != null && !p.getEmergencyContacts().isEmpty()) {
+                summary.emergencyContactPhone = p.getEmergencyContacts().get(0).getPhone();
+            }
+        });
+        summary.emergencyName = blankToNull(victim.getFullName());
+        return summary;
+    }
+
+    /** Synthesizes all speech segments for this report in the background. */
+    private void prewarmSpeech(BystanderReportDocument report, UserDocument victim) {
+        try {
+            BystanderDtos.VictimSummary summary = loadAuthorizedFields(victim);
+            StateLanguageResolver.Resolution regional =
+                StateLanguageResolver.resolve(report.getLatitude(), report.getLongitude());
+            List<EmergencyCallScriptService.Segment> segments = scriptService.buildScript(
+                report.getCategory(), report.getLatitude(), report.getLongitude(),
+                summary.emergencyName, summary.bloodGroup, summary.allergies,
+                summary.medicalConditions, regional);
+            ttsService.prewarm(segments.stream()
+                .map(seg -> new String[]{seg.text(), seg.languageCode()})
+                .toList());
+        } catch (Exception e) {
+            // Pre-warm is best-effort only; the webhook falls back to <Say>.
         }
     }
 
