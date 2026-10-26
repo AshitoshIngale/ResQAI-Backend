@@ -143,8 +143,8 @@ class EmergencyCallFlowTest {
         assertArrayEquals(new byte[]{1, 2, 3, 4}, first.audioWav());
         assertEquals("Bearer key", authHeader[0]);
         assertTrue(body[0].contains("\"target_language_code\":\"mr-IN\""));
-        // Female voice, slower pace, high sample rate for call clarity.
-        assertTrue(body[0].contains("\"speaker\":\"priya\""));
+        // Male voice (user preference), slower pace, high sample rate.
+        assertTrue(body[0].contains("\"speaker\":\"anand\""));
         assertTrue(body[0].contains("\"pace\":0.85"));
         assertTrue(body[0].contains("\"speech_sample_rate\":44100"));
         // Second call is served from cache — no second provider request.
