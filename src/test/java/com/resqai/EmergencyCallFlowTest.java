@@ -143,6 +143,10 @@ class EmergencyCallFlowTest {
         assertArrayEquals(new byte[]{1, 2, 3, 4}, first.audioWav());
         assertEquals("Bearer key", authHeader[0]);
         assertTrue(body[0].contains("\"target_language_code\":\"mr-IN\""));
+        // Female voice, slower pace, high sample rate for call clarity.
+        assertTrue(body[0].contains("\"speaker\":\"priya\""));
+        assertTrue(body[0].contains("\"pace\":0.85"));
+        assertTrue(body[0].contains("\"speech_sample_rate\":44100"));
         // Second call is served from cache — no second provider request.
         var second = tts.synthesize("Emergency near the gate.", "mr-IN");
         assertEquals("cache", second.detail());
@@ -457,11 +461,34 @@ class EmergencyCallFlowTest {
                 "{\"address\":{\"suburb\":\"Rajarampuri\",\"city\":\"Kolhapur\","
                     + "\"state\":\"Maharashtra\",\"postcode\":\"416013\"}}");
         var geo = new com.resqai.service.ReverseGeocodeService(nominatim);
-        assertEquals("Rajarampuri, Kolhapur, Maharashtra 416013",
+        assertEquals("Rajarampuri, Kolhapur, Maharashtra - PIN 416013",
             geo.resolvePlaceName(16.70, 74.24));
         // Second call is served from cache (same rounded point).
-        assertEquals("Rajarampuri, Kolhapur, Maharashtra 416013",
+        assertEquals("Rajarampuri, Kolhapur, Maharashtra - PIN 416013",
             geo.resolvePlaceName(16.7001, 74.2401));
+    }
+
+    @Test
+    void reverseGeocodeIncludesRoadAndExplicitPincodeMarker() {
+        // zoom-18 responses carry a road: the place becomes navigable.
+        ProviderHttpClient withRoad = (m, u, c, a, b) ->
+            new ProviderHttpClient.ProviderResponse(200,
+                "{\"address\":{\"road\":\"Shivaji Road\",\"suburb\":\"Kasba Peth\",\"city\":\"Pune\","
+                    + "\"state\":\"Maharashtra\",\"postcode\":\"411001\"}}");
+        var geo = new com.resqai.service.ReverseGeocodeService(withRoad);
+        assertEquals("near Shivaji Road, Kasba Peth, Pune, Maharashtra - PIN 411001",
+            geo.resolvePlaceName(18.5204, 73.8567));
+    }
+
+    @Test
+    void reverseGeocodeStatesPincodeUnavailableWhenProviderOmitsIt() {
+        ProviderHttpClient noPin = (m, u, c, a, b) ->
+            new ProviderHttpClient.ProviderResponse(200,
+                "{\"address\":{\"city\":\"Somewhere\",\"state\":\"Somestate\"}}");
+        var geo = new com.resqai.service.ReverseGeocodeService(noPin);
+        String out = geo.resolvePlaceName(10.0, 10.0);
+        assertEquals("Somewhere, Somestate (pincode unavailable for this point)", out);
+        assertTrue(!out.contains("PIN 000"));
     }
 
     @Test

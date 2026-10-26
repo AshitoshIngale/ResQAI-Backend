@@ -121,6 +121,7 @@ public class TwilioWebhookController {
                 // fetch — never read in a wrong-language voice; EN + HI
                 // already carry every fact, and the warm makes it play next time.
             }
+            twiml.append("  <Pause length=\"1\"/>\n");
         }
         if (!toWarm.isEmpty()) {
             tts.prewarm(toWarm);

@@ -45,10 +45,13 @@ public class ReverseGeocodeService {
         String cached = cache.get(cacheKey);
         if (cached != null) return cached.isEmpty() ? null : cached;
         try {
+            // zoom 18 = building-level: yields road, neighbourhood AND the
+            // postcode that actually covers these coordinates (verified:
+            // Pune 411001, Nashik 422001, Kolhapur 416003 all real).
             String url = NOMINATIM
                 + "?lat=" + URLEncoder.encode(String.valueOf(latitude), StandardCharsets.UTF_8)
                 + "&lon=" + URLEncoder.encode(String.valueOf(longitude), StandardCharsets.UTF_8)
-                + "&format=json&zoom=16&addressdetails=1&accept-language=en";
+                + "&format=json&zoom=18&addressdetails=1&accept-language=en";
             ProviderHttpClient.ProviderResponse response = http.sendWithUserAgent(
                 "GET", url, "application/json", null, USER_AGENT, new byte[0]);
             if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -57,11 +60,11 @@ public class ReverseGeocodeService {
             }
             JsonNode json = mapper.readTree(response.body);
             JsonNode address = json.path("address");
+            String road = address.path("road").asText(null);
             String area = firstNonBlank(
                 address.path("neighbourhood").asText(null),
                 address.path("suburb").asText(null),
-                address.path("village").asText(null),
-                address.path("town").asText(null),
+                address.path("quarter").asText(null),
                 address.path("city_district").asText(null));
             String city = firstNonBlank(
                 address.path("city").asText(null),
@@ -70,11 +73,17 @@ public class ReverseGeocodeService {
             String state = address.path("state").asText(null);
             String postcode = address.path("postcode").asText(null);
 
+            // Shape: "near <road>, <area>, <city>, <state> - PIN <pincode>" -
+            // the pincode comes from THIS point's reverse result, so it
+            // matches the live location. Missing parts are omitted; if the
+            // provider supplies no pincode we SAY so rather than guessing.
             StringBuilder out = new StringBuilder();
+            if (road != null) out.append("near ").append(road).append(", ");
             if (area != null && (city == null || !area.equals(city))) out.append(area).append(", ");
             if (city != null) out.append(city).append(", ");
             if (state != null) out.append(state);
-            if (postcode != null) out.append(" ").append(postcode);
+            if (postcode != null) out.append(" - PIN ").append(postcode);
+            else if (state != null) out.append(" (pincode unavailable for this point)");
 
             String result = out.toString().trim().replaceAll(", $", "");
             if (result.isBlank()) {

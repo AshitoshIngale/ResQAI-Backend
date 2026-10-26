@@ -33,8 +33,11 @@ public class SarvamTtsService {
 
     private static final Logger log = LoggerFactory.getLogger(SarvamTtsService.class);
     private static final String TTS_URL = "https://api.sarvam.ai/text-to-speech";
-    /** Verified compatible speaker for all bulbul:v3 languages we use. */
-    private static final String SPEAKER = "anand";
+    /** Female speaker, verified live for en/hi/mr on bulbul:v3 (clearer for emergencies). */
+    private static final String SPEAKER = "priya";
+    /** Slower than normal pace: measured fast speech was hard to understand on calls. */
+    private static final double PACE = 0.85;
+    private static final int SAMPLE_RATE = 44100;
 
     private final ProviderHttpClient http;
     private final String apiKey;
@@ -128,6 +131,8 @@ public class SarvamTtsService {
                 put("text", text);
                 put("target_language_code", languageCode);
                 put("speaker", SPEAKER);
+                put("pace", PACE);
+                put("speech_sample_rate", SAMPLE_RATE);
             }});
             ProviderHttpClient.ProviderResponse response = http.send(
                 "POST", TTS_URL, "application/json",
@@ -149,7 +154,7 @@ public class SarvamTtsService {
             byte[] wav = java.util.Base64.getDecoder().decode(audios.get(0).asText());
             if (cache.size() > 200) cache.clear(); // crude bound; scripts are short-lived
             cache.put(key, wav);
-            return new TtsResult(Status.SYNTHESIZED, wav, "sarvam:tts:bulbul-v3", attemptedAt);
+            return new TtsResult(Status.SYNTHESIZED, wav, "sarvam:tts:bulbul-v3:priya:0.85:44100", attemptedAt);
         } catch (Exception e) {
             log.warn("Sarvam TTS failed: {}", e.getMessage());
             return new TtsResult(Status.FAILED, null,
