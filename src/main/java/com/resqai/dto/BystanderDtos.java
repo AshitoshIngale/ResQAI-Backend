@@ -23,8 +23,20 @@ public final class BystanderDtos {
     public static class SummaryResponse {
         public String emergencyId;
         public boolean accountVerified;
-        /** Honest capability marker: full responder medical-disclosure policy is PENDING. */
+        /** Honest capability marker for what THIS lookup discloses. */
         public String medicalInfoPolicy;
+        /** Victim's display name for the bystander screen (owner-approved disclosure). */
+        public String emergencyName;
+        /** Emergency contacts with direct call access (max 3, minimum fields). */
+        public List<EmergencyContactView> emergencyContacts;
+    }
+
+    /** Minimum contact fields a bystander needs to CALL, nothing more. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class EmergencyContactView {
+        public String name;
+        public String phone;
+        public String relationship;
     }
 
     public static class ReportRequest {

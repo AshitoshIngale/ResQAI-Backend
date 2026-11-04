@@ -102,11 +102,68 @@ public class BystanderReportService {
         if (user.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Emergency ID not recognized");
         }
+        UserDocument victim = user.get();
         BystanderDtos.SummaryResponse response = new BystanderDtos.SummaryResponse();
-        response.emergencyId = user.get().getEmergencyId();
+        response.emergencyId = victim.getEmergencyId();
         response.accountVerified = true;
-        response.medicalInfoPolicy = "PENDING";
+        // Owner-approved emergency disclosure (product decision 2026-11):
+        // the bystander sees WHO they are helping and WHO to call - the two
+        // things that decide whether help arrives. No medical data here.
+        response.emergencyName = blankToNull(victim.getFullName());
+        response.emergencyContacts = loadEmergencyContacts(victim);
+        response.medicalInfoPolicy = "EMERGENCY_CONTACTS_DISCLOSED";
+        try {
+            audit.save(new com.resqai.model.MedicalAccessAuditDocument(
+                null, code, "EMERGENCY_LOOKUP_CONTACT_DISCLOSURE"));
+        } catch (Exception e) {
+            org.slf4j.LoggerFactory.getLogger(BystanderReportService.class)
+                .warn("lookup audit write failed: {}", e.getMessage());
+        }
         return response;
+    }
+
+    /** Dedicated contacts first, then embedded profile contacts; max 3. */
+    private java.util.List<BystanderDtos.EmergencyContactView> loadEmergencyContacts(
+            UserDocument victim) {
+        java.util.List<BystanderDtos.EmergencyContactView> out = new java.util.ArrayList<>();
+        try {
+            contacts.findByOwnerUserIdOrderByCreatedAtAsc(victim.getId())
+                .forEach(c -> {
+                    if (out.size() < 3 && c.getPhone() != null && !c.getPhone().isBlank()) {
+                        BystanderDtos.EmergencyContactView v = new BystanderDtos.EmergencyContactView();
+                        v.name = c.getName();
+                        v.phone = c.getPhone().trim();
+                        v.relationship = c.getRelationship();
+                        out.add(v);
+                    }
+                });
+            if (out.size() < 3) {
+                profiles.findByUserId(victim.getId()).ifPresent(p -> {
+                    if (p.getEmergencyContacts() != null) {
+                        p.getEmergencyContacts().forEach(c -> {
+                            if (out.size() < 3 && c.getPhone() != null
+                                && !c.getPhone().isBlank()) {
+                                boolean dup = out.stream().anyMatch(v ->
+                                    v.phone.equals(c.getPhone().trim()));
+                                if (!dup) {
+                                    BystanderDtos.EmergencyContactView v =
+                                        new BystanderDtos.EmergencyContactView();
+                                    v.name = c.getName();
+                                    v.phone = c.getPhone().trim();
+                                    v.relationship = c.getRelationship();
+                                    out.add(v);
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+        } catch (Exception e) {
+            // Contacts failing to load must not break identity resolution.
+            org.slf4j.LoggerFactory.getLogger(BystanderReportService.class)
+                .warn("emergency contact disclosure failed: {}", e.getMessage());
+        }
+        return out;
     }
 
     /** Extracts and validates the bare code from a scanned or typed payload. */

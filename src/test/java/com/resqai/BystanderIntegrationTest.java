@@ -75,7 +75,9 @@ class BystanderIntegrationTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
                     {"fullName":"Victim User","email":"%s","phone":"%s",
-                     "password":"S3cure!Passw0rd","bloodGroup":"B+","acceptedTermsAt":1}
+                     "password":"S3cure!Passw0rd","bloodGroup":"B+","acceptedTermsAt":1,
+                     "emergencyContactName":"Rescue Contact",
+                     "emergencyContactPhone":"+919876500000"}
                     """.formatted(email, phone)))
             .andExpect(status().isCreated());
 
@@ -107,7 +109,7 @@ class BystanderIntegrationTest {
     // ---------------- Emergency-code resolution ----------------
 
     @Test
-    void summaryResolvesCodeButDisclosesNoPrivateData() throws Exception {
+    void summaryResolvesCodeAndDisclosesNameAndEmergencyContacts() throws Exception {
         Victim victim = registerVictim();
 
         // Full versioned QR payload form
@@ -116,7 +118,10 @@ class BystanderIntegrationTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.emergencyId").value(victim.emergencyId()))
             .andExpect(jsonPath("$.accountVerified").value(true))
-            .andExpect(jsonPath("$.medicalInfoPolicy").value("PENDING"));
+            .andExpect(jsonPath("$.medicalInfoPolicy").value("EMERGENCY_CONTACTS_DISCLOSED"))
+            .andExpect(jsonPath("$.emergencyName").value("Victim User"))
+            .andExpect(jsonPath("$.emergencyContacts[0].name").value("Rescue Contact"))
+            .andExpect(jsonPath("$.emergencyContacts[0].phone").value("+919876500000"));
 
         // Bare code form also works
         mockMvc.perform(get("/api/v1/emergency-ids/" + victim.emergencyCode() + "/summary")
@@ -124,12 +129,15 @@ class BystanderIntegrationTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.emergencyId").value(victim.emergencyId()));
 
-        // The response must not contain medical/profile details
+        // Owner-approved disclosure (2026-11 policy): the bystander sees the
+        // victim's NAME and EMERGENCY CONTACTS (direct call access) - but
+        // still NO medical data (blood group, allergies, conditions).
         MvcResult result = mockMvc.perform(get("/api/v1/emergency-ids/" + victim.emergencyCode() + "/summary")
                 .with(req -> { req.addHeader("X-Forwarded-For", "9.9.9.3"); return req; }))
             .andExpect(status().isOk()).andReturn();
         String body = result.getResponse().getContentAsString();
-        assertThat(body).doesNotContain("bloodGroup", "allergies", "phone", "email", "fullName");
+        assertThat(body).doesNotContain("bloodGroup", "allergies", "medicalConditions",
+            "currentMedications", "email", "fullName");
     }
 
     @Test
