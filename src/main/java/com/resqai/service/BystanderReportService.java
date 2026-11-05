@@ -87,6 +87,13 @@ public class BystanderReportService {
         this.geocoder = geocoder;
     }
 
+    private EmergencyDualCallService dualCallService;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setDualCallService(EmergencyDualCallService dualCallService) {
+        this.dualCallService = dualCallService;
+        dualCallService.setReportService(this);
+    }
+
     /**
      * Resolves an emergency code (bare, or RESQAI:1:<code> payload) to the
      * minimum authorized summary. Returns 404 with a generic message for
@@ -232,7 +239,9 @@ public class BystanderReportService {
         if (verified) {
             attemptAssociation(saved, victim.get());
             notifyVictimContacts(saved, victim.get());
-            initiateEmergencyCallOnce(saved, victim.get());
+            // BOTH calls dispatched concurrently (spec PART 6): ambulance +
+            // bystander AI. Independent failures; idempotent per report.
+            dualCallService.startDualCallAsync(saved, victim.get());
             saved = reports.save(saved);
         }
         BystanderDtos.ReportResponse response = toResponse(saved);

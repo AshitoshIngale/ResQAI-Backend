@@ -20,6 +20,12 @@ public class EmergencyCallConfigController {
     @Value("${resqai.emergency-call.destination:}")
     private String destination;
 
+    private final com.resqai.config.TwilioConfigurationService twilioConfig;
+
+    public EmergencyCallConfigController(com.resqai.config.TwilioConfigurationService twilioConfig) {
+        this.twilioConfig = twilioConfig;
+    }
+
     @GetMapping("/emergency-call")
     public ResponseEntity<Map<String, String>> emergencyCall() {
         String value = destination == null ? "" : destination.trim();
@@ -27,11 +33,13 @@ public class EmergencyCallConfigController {
             // Honest error: never serve an invalid destination silently.
             return ResponseEntity.ok(Map.of(
                 "destination", "",
+                "smsTriggerNumber", twilioConfig.smsTriggerNumber() == null ? "" : twilioConfig.smsTriggerNumber(),
                 "source", "SERVER_INVALID",
                 "error", "Emergency call destination is not configured on the server"));
         }
         return ResponseEntity.ok(Map.of(
             "destination", value,
+            "smsTriggerNumber", twilioConfig.smsTriggerNumber() == null ? "" : twilioConfig.smsTriggerNumber(),
             "source", "SERVER"));
     }
 }

@@ -124,7 +124,17 @@ public class UserDocument {
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public Long getAcceptedTermsAt() { return acceptedTermsAt; }
     public void setAcceptedTermsAt(Long acceptedTermsAt) { this.acceptedTermsAt = acceptedTermsAt; }
-    public String getEmergencyId() { return emergencyId; }
+        /** Registered Android device signing key (EC P-256, X.509 SPKI b64) for emergency SMS. */
+    private String devicePublicKey;
+    /** Registered device identifier from the same registration. */
+    private String deviceId;
+
+    public String getDevicePublicKey() { return devicePublicKey; }
+    public void setDevicePublicKey(String devicePublicKey) { this.devicePublicKey = devicePublicKey; }
+    public String getDeviceId() { return deviceId; }
+    public void setDeviceId(String deviceId) { this.deviceId = deviceId; }
+
+public String getEmergencyId() { return emergencyId; }
     public void setEmergencyId(String emergencyId) { this.emergencyId = emergencyId; }
     public String getEmergencyCode() { return emergencyCode; }
     public void setEmergencyCode(String emergencyCode) { this.emergencyCode = emergencyCode; }

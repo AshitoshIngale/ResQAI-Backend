@@ -280,7 +280,12 @@ class EmergencyCallFlowTest {
             reports, users, profiles,
             new TwilioVoiceService(ttsOk, "AC1", "token", "+1555"),
             new SarvamTtsService(ttsOk, "key"),
-            scripts); // publicBaseUrl field left null -> default URL
+            scripts,
+            mock(com.resqai.repository.EmergencySmsIncidentRepository.class),
+            new com.resqai.service.FirstAidOrchestrator(),
+            mock(com.resqai.repository.BystanderCallSessionRepository.class),
+            mock(com.resqai.repository.VoiceConversationHistoryRepository.class),
+            mock(com.resqai.repository.FirstAidGuidanceLogRepository.class)); // publicBaseUrl field left null -> default URL
 
         Map<String, String> form = new HashMap<>();
         form.put("CallSid", "CA1");
@@ -312,7 +317,12 @@ class EmergencyCallFlowTest {
         TwilioWebhookController warmController = new TwilioWebhookController(
             reports, users, profiles,
             new TwilioVoiceService(ttsOk, "AC1", "token", "+1555"),
-            realTts, scripts);
+            realTts, scripts,
+            mock(com.resqai.repository.EmergencySmsIncidentRepository.class),
+            new com.resqai.service.FirstAidOrchestrator(),
+            mock(com.resqai.repository.BystanderCallSessionRepository.class),
+            mock(com.resqai.repository.VoiceConversationHistoryRepository.class),
+            mock(com.resqai.repository.FirstAidGuidanceLogRepository.class));
         var warmResponse = warmController.twiml("r-1", signature, form);
         String warmXml = warmResponse.getBody();
         assertEquals(3, warmXml.split("<Play>", -1).length - 1);
@@ -335,7 +345,12 @@ class EmergencyCallFlowTest {
             reports, users, profiles,
             new TwilioVoiceService(failing, "AC1", "token", "+1555"),
             new SarvamTtsService(failing, "key"),
-            scripts);
+            scripts,
+            mock(com.resqai.repository.EmergencySmsIncidentRepository.class),
+            new com.resqai.service.FirstAidOrchestrator(),
+            mock(com.resqai.repository.BystanderCallSessionRepository.class),
+            mock(com.resqai.repository.VoiceConversationHistoryRepository.class),
+            mock(com.resqai.repository.FirstAidGuidanceLogRepository.class));
 
         Map<String, String> form = new HashMap<>();
         String url = "https://resqai-backend-n128.onrender.com/api/v1/twiml/incident/r-1";

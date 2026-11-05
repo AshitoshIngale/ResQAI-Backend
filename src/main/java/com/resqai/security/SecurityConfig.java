@@ -50,6 +50,9 @@ public class SecurityConfig {
                 // public by design (contains only the destination number).
                 .requestMatchers("/api/v1/twiml/**", "/api/v1/tts/**",
                                  "/api/v1/twilio/**").permitAll()
+                // SMS emergency webhook + its status callback: authenticated
+                // via X-Twilio-Signature inside the controller (spec PART 5).
+                .requestMatchers("/api/emergency/sms/**").permitAll()
                 .requestMatchers("/api/v1/config/**").permitAll()
                 .requestMatchers("/api/v1/users/**").authenticated()
                 .requestMatchers("/api/v1/incidents/**").authenticated()

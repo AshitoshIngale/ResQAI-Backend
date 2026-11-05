@@ -177,3 +177,46 @@ In MongoDB Atlas → Network Access, add the outbound IP addresses Render uses
   They are **not** authentication credentials and expose no medical data.
 - CORS is empty by default (the Android app needs none); do not open it casually.
 - No hardcoded or seeded user accounts exist.
+
+
+---
+
+# Master Spec Additions (2026-11)
+
+## Two-number Twilio architecture (PART 3)
+- **Number A** (`TWILIO_SMS_AMBULANCE_NUMBER`): receives the owner's signed emergency SMS and places the ambulance voice call.
+- **Number B** (`TWILIO_BYSTANDER_AI_NUMBER`): places the bystander's AI first-aid call.
+- Test destinations: `AMBULANCE_TEST_DESTINATION_NUMBER`, `BYSTANDER_TEST_DESTINATION_NUMBER` (env-only, no rebuild).
+- `TwilioConfigurationService` validates both numbers against the live account at startup (ownership + distinctness) and logs a configuration report.
+
+## Owner offline SOS via signed SMS (PART 4-5)
+The phone needs NO internet - only cellular SMS:
+1. SOS press -> app builds the compact payload `RESQ|1|incidentId|patientId|deviceId|timestamp|nonce|category|name|blood|allergies|conditions|lat|lon|accuracy|lang` and signs it with an **EC P-256 key in Android Keystore** (public key registered via `POST /api/v1/devices/register`).
+2. SMS sent with the native SmsManager to Number A.
+3. Twilio POSTs to `POST /api/emergency/sms/webhook` -> backend validates Twilio signature, sender, ECDSA signature, timestamp window (+/-10 min), nonce (durable replay store), duplicate incidentId.
+4. Incident stored in `emergency_sms_incidents`; ambulance call placed from Number A with `<Say>` TwiML (`/api/v1/twiml/sms/{incidentId}`, repeats twice, EN/HI voice).
+5. Call status tracked at `POST /api/emergency/sms/status/{incidentId}`.
+
+Honest statuses on the phone: CREATED / SUBMITTED / SUBMIT_FAILED - submission is never claimed as Twilio receipt. The direct native emergency call remains fully available as the fallback (spec PART 11).
+
+## Dual simultaneous calls (PART 6)
+`EmergencyDualCallService` dispatches CALL 1 (ambulance) and CALL 2 (bystander AI) on separate threads immediately after incident creation - independent failures, idempotent per report (ambulance: callStatus guard; bystander: bystanderCallSid guard). Statuses reported separately in the API (`callStatus` vs `bystanderCallStatus`).
+
+## Bystander AI first-aid agent (PART 7-9)
+Number B calls the bystander (with their explicit in-app consent, confirmed number, and chosen language EN/HI/MR). The conversation is a **multi-turn voice dialog** driven by Twilio `<Gather input="speech">` (natural speech turn-taking with barge-in) connected to the deterministic `FirstAidOrchestrator`: per-category question/instruction chains for bleeding, unconsciousness, breathing difficulty, seizure, burns, fracture, poisoning and cardiac emergencies, with medical-context cautions (blood thinners, seizure history, diabetes, allergies) injected from the victim's authorized record. Every instruction is audited in `first_aid_guidance_logs`, every conversation turn in `voice_conversation_history`, sessions in `bystander_call_sessions`.
+
+> Documented limitation (per spec 7.1): turn-taking uses Twilio's server-side speech recognition rather than a raw bidirectional Media Stream -> Sarvam streaming pipe. This is the lowest-latency architecture supportable today; the Media Stream WebSocket upgrade is the future latency optimization. It is NOT an IVR menu - the dialog is multi-turn, context-aware and adaptive.
+
+## New environment variables
+```
+TWILIO_SMS_AMBULANCE_NUMBER=      # Number A
+TWILIO_BYSTANDER_AI_NUMBER=       # Number B
+AMBULANCE_TEST_DESTINATION_NUMBER=
+BYSTANDER_TEST_DESTINATION_NUMBER=
+```
+
+## Windows run
+`run.bat` in this folder: checks Java, loads `.env`, validates required configuration, builds if needed, and starts the backend with clear failure reporting.
+
+## New collections
+`emergency_sms_incidents`, `emergency_sms_nonces`, `bystander_call_sessions`, `voice_conversation_history`, `first_aid_guidance_logs`.

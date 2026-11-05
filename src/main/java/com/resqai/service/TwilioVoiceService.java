@@ -103,11 +103,23 @@ public class TwilioVoiceService {
      * guarded by idempotency.
      */
     public CallResult placeEmergencyCall(String toNumber, String twimlUrl, String statusCallbackUrl) {
-        Instant attemptedAt = Instant.now();
         String from = resolveFromNumber();
         if (accountSid.isBlank() || authToken.isBlank() || from.isBlank()) {
             return new CallResult(Status.NOT_CONFIGURED, null,
                 "Twilio Voice credentials are not configured; automated calling is unavailable.",
+                Instant.now());
+        }
+        return placeEmergencyCallFrom(toNumber, from, twimlUrl, statusCallbackUrl);
+    }
+
+    /** Same call with an EXPLICIT From number (TwilioConfigurationService Number A). */
+    public CallResult placeEmergencyCallFrom(String toNumber, String fromNumber,
+                                             String twimlUrl, String statusCallbackUrl) {
+        Instant attemptedAt = Instant.now();
+        String from = fromNumber == null ? "" : fromNumber.trim();
+        if (accountSid.isBlank() || authToken.isBlank() || from.isBlank()) {
+            return new CallResult(Status.NOT_CONFIGURED, null,
+                "Twilio Voice credentials or From number are not configured.",
                 attemptedAt);
         }
         if (toNumber == null || toNumber.isBlank()) {

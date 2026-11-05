@@ -77,6 +77,13 @@ public final class BystanderDtos {
 
         @Size(max = 200)
         public String source;
+        /** Bystander mobile number for the AI first-aid call (optional, consented). */
+        @Size(max = 20)
+        public String bystanderPhone;
+        /** Explicit consent to receive the AI call. */
+        public boolean bystanderConsent;
+        /** Selected AI-call language: en | hi | mr. */
+        public String bystanderLanguage;
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -99,6 +106,9 @@ public final class BystanderDtos {
         /** Automated emergency-call attempt outcome (honest; INITIATED is not a dispatch claim). */
         public String callStatus;
         public String callDetail;
+        /** CALL 2: bystander AI first-aid call (independent status). */
+        public String bystanderCallStatus;
+        public String bystanderCallDetail;
     }
 
     /**

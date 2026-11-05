@@ -134,6 +134,32 @@ public class BystanderReportDocument {
     public String getLocationName() { return locationName; }
     public void setLocationName(String locationName) { this.locationName = locationName; }
 
+    /** Bystander's mobile number for the AI first-aid call (consented). */
+    private String bystanderPhone;
+    private boolean bystanderConsent;
+    /** Language the bystander selected for the AI call: en | hi | mr. */
+    private String bystanderLanguage;
+
+    private String bystanderCallSid;
+    private String bystanderCallStatus;
+    private String bystanderCallDetail;
+    private Instant bystanderCallAttemptedAt;
+
+    public String getBystanderPhone() { return bystanderPhone; }
+    public void setBystanderPhone(String bystanderPhone) { this.bystanderPhone = bystanderPhone; }
+    public boolean isBystanderConsent() { return bystanderConsent; }
+    public void setBystanderConsent(boolean bystanderConsent) { this.bystanderConsent = bystanderConsent; }
+    public String getBystanderLanguage() { return bystanderLanguage; }
+    public void setBystanderLanguage(String bystanderLanguage) { this.bystanderLanguage = bystanderLanguage; }
+    public String getBystanderCallSid() { return bystanderCallSid; }
+    public void setBystanderCallSid(String bystanderCallSid) { this.bystanderCallSid = bystanderCallSid; }
+    public String getBystanderCallStatus() { return bystanderCallStatus; }
+    public void setBystanderCallStatus(String bystanderCallStatus) { this.bystanderCallStatus = bystanderCallStatus; }
+    public String getBystanderCallDetail() { return bystanderCallDetail; }
+    public void setBystanderCallDetail(String bystanderCallDetail) { this.bystanderCallDetail = bystanderCallDetail; }
+    public Instant getBystanderCallAttemptedAt() { return bystanderCallAttemptedAt; }
+    public void setBystanderCallAttemptedAt(Instant bystanderCallAttemptedAt) { this.bystanderCallAttemptedAt = bystanderCallAttemptedAt; }
+
     public String getCallStatus() { return callStatus; }
     public void setCallStatus(String callStatus) { this.callStatus = callStatus; }
     public String getCallDetail() { return callDetail; }
