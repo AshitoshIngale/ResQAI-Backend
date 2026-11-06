@@ -44,6 +44,11 @@ public class TwilioVoiceService {
     private final String accountSid;
     private final String authToken;
     private final String fromNumber;
+
+    @Value("${resqai.twilio.account-sid-b:}")
+    private String accountSidB;
+    @Value("${resqai.twilio.auth-token-b:}")
+    private String authTokenB;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** Auto-detected owned Twilio number (cached) when voice-from env is blank. */
@@ -162,6 +167,96 @@ public class TwilioVoiceService {
             return new CallResult(Status.FAILED, null,
                 "Call request failed (network/timeout).", attemptedAt);
         }
+    }
+
+    /**
+     * CALL 2 (bystander AI): placed from Number B, authenticated against
+     * ACCOUNT B credentials (Number B may belong to a second Twilio
+     * account). Independent from the ambulance call path.
+     */
+    public CallResult placeBystanderAICall(String toNumber, String fromNumberB,
+                                           String twimlUrl, String statusCallbackUrl) {
+        Instant attemptedAt = Instant.now();
+        String sidB = accountSidB == null ? "" : accountSidB.trim();
+        String tokenB = authTokenB == null ? "" : authTokenB.trim();
+        if (sidB.isBlank() || tokenB.isBlank()) {
+            return new CallResult(Status.NOT_CONFIGURED, null,
+                "Twilio Number B account credentials (ACCOUNT_SID_B/AUTH_TOKEN_B) are not configured.",
+                attemptedAt);
+        }
+        String from = fromNumberB == null ? "" : fromNumberB.trim();
+        if (from.isBlank() || !isValidDestination(from.replace("whatsapp:", ""))) {
+            return new CallResult(Status.NOT_CONFIGURED, null,
+                "Twilio Number B is not configured.", attemptedAt);
+        }
+        if (toNumber == null || toNumber.isBlank()) {
+            return new CallResult(Status.FAILED, null, "No bystander number provided.", attemptedAt);
+        }
+        try {
+            StringBuilder form = new StringBuilder()
+                .append("To=").append(urlEncode(toNumber))
+                .append("&From=").append(urlEncode(from))
+                .append("&Url=").append(urlEncode(twimlUrl));
+            if (statusCallbackUrl != null && !statusCallbackUrl.isBlank()) {
+                form.append("&StatusCallback=").append(urlEncode(statusCallbackUrl));
+                form.append("&StatusCallbackEvent=completed");
+            }
+            String auth = "Basic " + Base64.getEncoder().encodeToString(
+                (sidB + ":" + tokenB).getBytes(StandardCharsets.UTF_8));
+            ProviderHttpClient.ProviderResponse response = http.send(
+                "POST", String.format(CALLS_URL, sidB),
+                "application/x-www-form-urlencoded", auth,
+                form.toString().getBytes(StandardCharsets.UTF_8));
+            if (response.statusCode >= 200 && response.statusCode < 300) {
+                String sid = mapper.readTree(response.body).path("sid").asText(null);
+                log.info("bystander AI call initiated from account B, sid={}", sid);
+                return new CallResult(Status.INITIATED, sid, "twilio:voice:accountB", attemptedAt);
+            }
+            String code = extractCode(response.body);
+            String message = extractMessage(response.body);
+            if (response.statusCode == 401 || response.statusCode == 403) {
+                return new CallResult(Status.INVALID_CREDENTIALS, null,
+                    "Account B credentials rejected (HTTP " + response.statusCode + ").", attemptedAt);
+            }
+            return new CallResult(Status.RESTRICTED, null,
+                "Twilio refused the bystander call (HTTP " + response.statusCode
+                    + (code.isEmpty() ? "" : " code " + code) + ")"
+                    + (message.isEmpty() ? "" : ": " + message), attemptedAt);
+        } catch (Exception e) {
+            log.warn("bystander AI call failed: {}", e.getMessage());
+            return new CallResult(Status.FAILED, null,
+                "Call request failed (network/timeout).", attemptedAt);
+        }
+    }
+
+    /** Validates a bystander-webhook signature against ACCOUNT B's token. */
+    public boolean isBystanderSignatureValid(String signatureHeader, String requestUrl,
+                                             Map<String, String> formParams) {
+        String tokenB = authTokenB == null ? "" : authTokenB.trim();
+        if (tokenB.isBlank() || signatureHeader == null || signatureHeader.isBlank()) {
+            return false;
+        }
+        try {
+            StringBuilder payload = new StringBuilder(requestUrl);
+            new TreeMap<>(formParams).forEach((k, v) ->
+                payload.append(k).append(v == null ? "" : v));
+            Mac mac = Mac.getInstance("HmacSHA1");
+            mac.init(new SecretKeySpec(tokenB.getBytes(StandardCharsets.UTF_8), "HmacSHA1"));
+            byte[] digest = mac.doFinal(payload.toString().getBytes(StandardCharsets.UTF_8));
+            String expected = Base64.getEncoder().encodeToString(digest);
+            return MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8),
+                signatureHeader.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** True when account B credentials exist (bystander webhooks enforce them). */
+    public boolean isBystanderAccountConfigured() {
+        String sidB = accountSidB == null ? "" : accountSidB.trim();
+        String tokenB = authTokenB == null ? "" : authTokenB.trim();
+        return !sidB.isBlank() && !tokenB.isBlank();
     }
 
     /**

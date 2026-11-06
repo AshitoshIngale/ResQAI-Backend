@@ -33,6 +33,11 @@ public class BystanderCallSessionDocument {
     private String medicalContextJson;
     private Instant startedAt = Instant.now();
     private Instant endedAt;
+    /** Reminder bookkeeping: victim details re-spoken when this is true. */
+    private boolean detailsReminded = false;
+
+    public boolean isDetailsReminded() { return detailsReminded; }
+    public void setDetailsReminded(boolean detailsReminded) { this.detailsReminded = detailsReminded; }
 
     public String getId() { return id; }
     public String getCallSid() { return callSid; }

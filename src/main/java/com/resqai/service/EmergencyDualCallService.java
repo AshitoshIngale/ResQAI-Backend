@@ -82,8 +82,9 @@ public class EmergencyDualCallService {
             String base = twilioConfig.publicBaseUrl();
             String twimlUrl = base + "/api/v1/twiml/bystander/" + report.getReportId();
             String statusUrl = base + "/api/v1/twilio/status/bystander/" + report.getReportId();
+            // Number B lives on ACCOUNT B: its own credentials authenticate.
             TwilioVoiceService.CallResult result =
-                voice.placeEmergencyCallFrom(destination, callerId, twimlUrl, statusUrl);
+                voice.placeBystanderAICall(destination, callerId, twimlUrl, statusUrl);
             report.setBystanderCallSid(result.callSid());
             report.setBystanderCallStatus(result.status().name());
             report.setBystanderCallDetail(result.detail());

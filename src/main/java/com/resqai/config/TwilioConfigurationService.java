@@ -34,6 +34,12 @@ public class TwilioConfigurationService {
     @Value("${resqai.twilio.sms-ambulance-number:}") private String smsAmbulanceNumber;
     @Value("${resqai.twilio.bystander-ai-number:}") private String bystanderAiNumber;
 
+    // Number B may live on a SECOND Twilio account (the free tier includes
+    // one free number per account) - so the bystander AI call authenticates
+    // against its own account credentials.
+    @Value("${resqai.twilio.account-sid-b:}") private String accountSidB;
+    @Value("${resqai.twilio.auth-token-b:}") private String authTokenB;
+
     @Value("${resqai.twilio.ambulance-test-destination:}") private String ambulanceTestDestination;
     @Value("${resqai.twilio.bystander-test-destination:}") private String bystanderTestDestination;
 
@@ -62,6 +68,26 @@ public class TwilioConfigurationService {
     /** Caller ID for the BYSTANDER AI call: Number B only (strict). */
     public String bystanderAiCallerId() {
         return bystanderAiNumber.isBlank() ? null : bystanderAiNumber.trim();
+    }
+
+    /** Account B credentials (the account that owns Number B). */
+    public String accountSidB() {
+        return accountSidB == null ? "" : accountSidB.trim();
+    }
+
+    public String authTokenB() {
+        return authTokenB == null ? "" : authTokenB.trim();
+    }
+
+    /** True when Number B AND its owning account are fully configured. */
+    public boolean isBystanderAccountConfigured() {
+        return !accountSidB().isBlank() && !authTokenB().isBlank()
+            && !bystanderAiCallerId().isBlank();
+    }
+
+    /** Auth token used to validate bystander-call webhooks (account B). */
+    public String bystanderAuthToken() {
+        return authTokenB().isBlank() ? authToken : authTokenB();
     }
 
     /** Ambulance destination: test destination during testing, else configured. */
@@ -125,7 +151,27 @@ public class TwilioConfigurationService {
             numbers.forEach(n -> owned.add(n.path("phone_number").asText()));
 
             checkNumber(report, "A (SMS + ambulance voice)", smsAmbulanceNumber, owned);
-            checkNumber(report, "B (bystander AI voice)", bystanderAiNumber, owned);
+            if (!accountSidB().isBlank() && accountSidB() != accountSid) {
+                // Number B lives on its own account - validate against THAT account.
+                String authB = "Basic " + java.util.Base64.getEncoder().encodeToString(
+                    (accountSidB() + ":" + authTokenB()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                com.resqai.service.ProviderHttpClient.ProviderResponse responseB = http.send(
+                    "GET", "https://api.twilio.com/2010-04-01/Accounts/" + accountSidB()
+                        + "/IncomingPhoneNumbers.json?PageSize=50",
+                    "application/json", authB, new byte[0]);
+                if (responseB.statusCode >= 200 && responseB.statusCode < 300) {
+                    List<String> ownedB = new java.util.ArrayList<>();
+                    mapper.readTree(responseB.body).path("incoming_phone_numbers")
+                        .forEach(n -> ownedB.add(n.path("phone_number").asText()));
+                    checkNumber(report, "B (bystander AI voice, account B)",
+                        bystanderAiNumber, ownedB);
+                } else {
+                    report.append("B: account B credentials rejected (HTTP ")
+                          .append(responseB.statusCode).append("). ");
+                }
+            } else {
+                checkNumber(report, "B (bystander AI voice)", bystanderAiNumber, owned);
+            }
             if (!smsAmbulanceNumber.isBlank() && smsAmbulanceNumber.equals(bystanderAiNumber)) {
                 report.append("WARNING: Number A and Number B are identical; ")
                       .append("simultaneous dual calls need DISTINCT numbers. ");

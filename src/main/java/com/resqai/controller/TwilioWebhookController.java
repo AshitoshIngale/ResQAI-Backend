@@ -272,7 +272,9 @@ public class TwilioWebhookController {
             @RequestHeader(value = "X-Twilio-Signature", required = false) String signature,
             @RequestParam Map<String, String> params) {
         if (!voice.shouldValidateSignatures()) return ResponseEntity.notFound().build();
-        if (!signatureValid(signature, "/api/v1/twiml/bystander/" + reportId, params)) {
+        // Number B belongs to ACCOUNT B: validate with ACCOUNT B's token.
+        if (!bystanderSignatureValid(signature,
+                "/api/v1/twiml/bystander/" + reportId, params)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
         var reportOpt = reports.findByReportId(reportId);
@@ -325,12 +327,36 @@ public class TwilioWebhookController {
             @RequestHeader(value = "X-Twilio-Signature", required = false) String signature,
             @RequestParam Map<String, String> params) {
         if (!voice.shouldValidateSignatures()) return ResponseEntity.notFound().build();
-        if (!signatureValid(signature, "/api/v1/twiml/bystander/" + reportId + "/turn", params)) {
+        if (!bystanderSignatureValid(signature,
+                "/api/v1/twiml/bystander/" + reportId + "/turn", params)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
         var session = sessions.findByCallSid(params.getOrDefault("CallSid", ""));
         if (session == null) {
             return ResponseEntity.ok(sayOnlyTwiml("Session not found. Goodbye."));
+        }
+
+        String capLang = session.getLanguage() == null ? "en" : session.getLanguage();
+        // 3-MINUTE CAP (user requirement): the AI conversation is bounded so
+        // the call is short and focused. On expiry the agent repeats the
+        // victim's key details one final time and closes politely.
+        if (session.getStartedAt() != null &&
+            java.time.Duration.between(session.getStartedAt(), Instant.now()).getSeconds() > 180) {
+            session.setSessionStatus("COMPLETED");
+            session.setEndedAt(Instant.now());
+            sessions.save(session);
+            var victim = users.findByEmergencyCode(
+                reports.findByReportId(reportId).map(r -> r.getEmergencyCode()).orElse(""))
+                .filter(UserDocument::isEnabled).orElse(null);
+            String details = victimSummaryLine(victim, capLang);
+            String closing = closingFor(capLang);
+            logHistory(session, "SYSTEM", "3-minute cap reached");
+            String capScript = reminderFor(capLang) + " " + details + " " + closing;
+            logHistory(session, "AGENT", capScript);
+            StringBuilder cap = new StringBuilder(gatherHeader());
+            cap.append(sayXml(capScript, capLang)).append("<Hangup/>");
+            return ResponseEntity.ok().contentType(MediaType.APPLICATION_XML)
+                .body(cap.append("</Response>").toString());
         }
         var reportOpt = reports.findByReportId(reportId);
         String category = reportOpt.map(r -> r.getCategory()).orElse("OTHER");
@@ -349,6 +375,20 @@ public class TwilioWebhookController {
             firstAid.medicalCautions(category, medical, lang);
 
         StringBuilder twiml = new StringBuilder(gatherHeader());
+
+        // PERIODIC VICTIM-DETAILS REMINDER: the bystander is busy and may
+        // forget who they are helping - re-state the essentials periodically
+        // (about every 75 seconds of conversation, once at most mid-flow).
+        if (!session.isDetailsReminded() && idx >= 1 &&
+            java.time.Duration.between(session.getStartedAt(), Instant.now()).getSeconds() > 75) {
+            var victimForReminder = users.findByEmergencyCode(
+                reports.findByReportId(reportId).map(r -> r.getEmergencyCode()).orElse(""))
+                .filter(UserDocument::isEnabled).orElse(null);
+            twiml.append(sayXml(reminderFor(lang) + " " +
+                victimSummaryLine(victimForReminder, lang), lang));
+            session.setDetailsReminded(true);
+            sessions.save(session);
+        }
 
         // If the PREVIOUS step was a question, acknowledge the answer briefly.
         if (idx >= 0 && idx < steps.size()
@@ -422,7 +462,8 @@ public class TwilioWebhookController {
             @RequestHeader(value = "X-Twilio-Signature", required = false) String signature,
             @RequestParam Map<String, String> params) {
         if (!voice.shouldValidateSignatures()) return ResponseEntity.notFound().build();
-        if (!signatureValid(signature, "/api/v1/twilio/status/bystander/" + reportId, params)) {
+        if (!bystanderSignatureValid(signature,
+                "/api/v1/twilio/status/bystander/" + reportId, params)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
         reports.findByReportId(reportId).ifPresent(report -> {
@@ -431,6 +472,46 @@ public class TwilioWebhookController {
             reports.save(report);
         });
         return ResponseEntity.ok().build();
+    }
+
+    /** Victim essentials the bystander needs while waiting for the ambulance. */
+    private String victimSummaryLine(UserDocument victim, String lang) {
+        String name = (victim == null || victim.getFullName() == null) ? null : victim.getFullName();
+        String notKnown = switch (lang) {
+            case "hi" -> "अज्ञात";
+            case "mr" -> "माहित नाही";
+            default -> "not available";
+        };
+        String blood = null;
+        if (victim != null) {
+            blood = profiles.findByUserId(victim.getId())
+                .map(pr -> pr.getBloodGroup()).orElse(null);
+        }
+        return switch (lang) {
+            case "hi" -> "याद रखें: रोगी " +
+                (name == null ? notKnown : name) + ", रक्त समूह " +
+                (blood == null ? notKnown : blood) + ". एम्बुलेंस रास्ते में है।";
+            case "mr" -> "लक्षात ठेवा: रुग्ण " +
+                (name == null ? notKnown : name) + ", रक्तगट " +
+                (blood == null ? notKnown : blood) + ". रुग्णवाहिका वाटेत आहे.";
+            default -> "Remember: the patient is " + (name == null ? notKnown : name)
+                + ", blood group " + (blood == null ? notKnown : blood)
+                + ". The ambulance is on its way.";
+        };
+    }
+    private String reminderFor(String lang) {
+        return switch (lang) {
+            case "hi" -> "याद दुबारा:";
+            case "mr" -> "पुन्हा लक्षात:";
+            default -> "As a reminder:";
+        };
+    }
+    private String closingFor(String lang) {
+        return switch (lang) {
+            case "hi" -> "यह सहायता कॉल समाप्त हो रही है। मरीज़ के पास रहें। अलविदा।";
+            case "mr" -> "ही मदत कॉल संपूर्ण होत आहे. रुग्णाजवळ राहा. धन्यवाद.";
+            default -> "This assistance call is now ending. Stay with the patient. Goodbye.";
+        };
     }
 
     private String stepText(FirstAidOrchestrator.Step step, String lang) {
@@ -560,6 +641,17 @@ public class TwilioWebhookController {
      * the Calls API (no query string), and the signed parameter set is every
      * request parameter (query + form body, as Spring merges them here).
      */
+    /** Bystander webhooks authenticate against ACCOUNT B's auth token. */
+    private boolean bystanderSignatureValid(String signature, String path, Map<String, String> params) {
+        Map<String, String> all = params == null ? new HashMap<>() : params;
+        String base = publicUrl(path);
+        if (voice.isBystanderAccountConfigured()) {
+            return voice.isBystanderSignatureValid(signature, base, all);
+        }
+        // No account B: fall back to the main account's token.
+        return voice.isSignatureValid(signature, base, all);
+    }
+
     private boolean signatureValid(String signature, String path, Map<String, String> params) {
         Map<String, String> all = params == null ? new HashMap<>() : params;
         return voice.isSignatureValid(signature, publicUrl(path), all);
