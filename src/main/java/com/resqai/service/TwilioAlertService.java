@@ -162,6 +162,47 @@ public class TwilioAlertService {
         }
     }
 
+    public record SmsUpdateResult(boolean sent, String detail) {}
+
+    /**
+     * Plain SMS update to a single number (spec PART 8): relays the
+     * situation report to the ambulance destination through the existing
+     * Twilio channel. Honest sent/failed result.
+     */
+    public SmsUpdateResult sendSmsUpdate(String toNumber, String bodyText) {
+        if (!isConfigured()) {
+            return new SmsUpdateResult(false,
+                "Twilio credentials are not configured on the backend.");
+        }
+        if (toNumber == null || toNumber.isBlank()) {
+            return new SmsUpdateResult(false, "No destination number configured.");
+        }
+        try {
+            String to = toNumber.trim();
+            String wireFrom = fromNumber;
+            String wireTo = to;
+            String form = new StringBuilder()
+                .append("To=").append(urlEncode(wireTo))
+                .append("&From=").append(urlEncode(wireFrom))
+                .append("&Body=").append(urlEncode(bodyText))
+                .toString();
+            String auth = "Basic " + Base64.getEncoder().encodeToString(
+                (accountSid + ":" + authToken).getBytes(StandardCharsets.UTF_8));
+            ProviderHttpClient.ProviderResponse response = http.send(
+                "POST", String.format(TWILIO_MESSAGES_URL, accountSid),
+                "application/x-www-form-urlencoded", auth, form.getBytes(StandardCharsets.UTF_8));
+            if (response.statusCode >= 200 && response.statusCode < 300) {
+                return new SmsUpdateResult(true, "sms:queued");
+            }
+            String code = extractTwilioErrorCode(response.body);
+            return new SmsUpdateResult(false,
+                "Twilio rejected the update (HTTP " + response.statusCode
+                    + (code.isEmpty() ? "" : " code " + code) + ")");
+        } catch (Exception e) {
+            return new SmsUpdateResult(false, "sms relay failed (network)");
+        }
+    }
+
     private static String urlEncode(String value) {
         return java.net.URLEncoder.encode(value, StandardCharsets.UTF_8);
     }

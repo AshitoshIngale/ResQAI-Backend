@@ -43,16 +43,20 @@ public class EmergencyDualCallService {
         this.voice = voice;
     }
 
-    /** Fire-and-forget: both calls dispatched concurrently. */
+    /**
+     * Fire-and-forget: the AMBULANCE call dispatches immediately (async).
+     *
+     * ARCHITECTURE CHANGE (latest spec): the bystander AI conversation is now
+     * a BROWSER/NATIVE in-app voice session over WebSocket - NOT a Twilio
+     * telephone call to the bystander. The bystander starts it from the app
+     * (POST /api/emergency/{incidentId}/voice/session + WS connect). The
+     * placeBystanderAICall path remains in TwilioVoiceService but is no
+     * longer dispatched here.
+     */
     public void startDualCallAsync(BystanderReportDocument report, UserDocument victim) {
         executor.submit(() -> startAmbulanceCall(report, victim));
-        if (report.isBystanderConsent()
-            && report.getBystanderPhone() != null && !report.getBystanderPhone().isBlank()) {
-            executor.submit(() -> startBystanderAICall(report));
-        } else {
-            log.info("bystander AI call skipped: consent=false or no number (report {})",
-                report.getReportId());
-        }
+        log.info("ambulance call dispatched async; bystander AI conversation is "
+            + "browser-based (in-app voice session), not a Twilio phone call");
     }
 
     /** CALL 1: ambulance - delegates to the existing idempotent initiation. */

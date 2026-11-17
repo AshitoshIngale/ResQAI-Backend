@@ -10,6 +10,7 @@ import org.springframework.boot.autoconfigure.security.servlet.UserDetailsServic
  * never carries an unintended credential source.
  */
 @SpringBootApplication(exclude = UserDetailsServiceAutoConfiguration.class)
+@org.springframework.scheduling.annotation.EnableScheduling
 public class ResQaiApplication {
     public static void main(String[] args) {
         SpringApplication.run(ResQaiApplication.class, args);
