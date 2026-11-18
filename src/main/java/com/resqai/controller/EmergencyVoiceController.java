@@ -98,6 +98,24 @@ public class EmergencyVoiceController {
         var victim = users.findByEmergencyCode(report.getEmergencyCode())
             .filter(UserDocument::isEnabled).orElse(null);
 
+        // Idempotent: one ACTIVE session per incident (reconnect after a
+        // browser refresh or network loss reuses the same session).
+        java.util.Optional<EmergencyVoiceSessionDocument> existing =
+            voiceSessions.findByIncidentId(incidentId);
+        if (existing.isPresent() && "ACTIVE".equals(existing.get().getState())
+            && existing.get().getExpiresAt() != null
+            && existing.get().getExpiresAt().isAfter(Instant.now())) {
+            Map<String, Object> out2 = new LinkedHashMap<>();
+            out2.put("sessionId", existing.get().getSessionId());
+            out2.put("token", existing.get().getSessionToken());
+            out2.put("wsUrl", "/ws/emergency/voice/" + incidentId);
+            out2.put("language", existing.get().getLanguage());
+            out2.put("patientName", existing.get().getVictimName());
+            out2.put("emergencyId", existing.get().getVictimEmergencyId());
+            out2.put("reconnected", true);
+            return ResponseEntity.ok(out2);
+        }
+
         var session = new EmergencyVoiceSessionDocument();
         session.setSessionId(UUID.randomUUID().toString());
         session.setSessionToken(UUID.randomUUID().toString() + UUID.randomUUID().toString().substring(0, 8));

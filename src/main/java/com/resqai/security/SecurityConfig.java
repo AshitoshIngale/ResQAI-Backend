@@ -56,6 +56,12 @@ public class SecurityConfig {
                 // Browser AI voice conversation: REST endpoints are JWT-
                 // authenticated; the WebSocket authenticates via its
                 // short-lived session token inside the handler.
+                // Voice session creation: capability endpoint - the incident
+                // UUID is unguessable and mic consent is required in-body.
+                // The WS itself authenticates with the short-lived session token.
+                .requestMatchers(
+                    org.springframework.http.HttpMethod.POST,
+                    "/api/emergency/*/voice/session").permitAll()
                 .requestMatchers("/api/emergency/**").authenticated()
                 .requestMatchers("/ws/emergency/**").permitAll()
                 .requestMatchers("/api/v1/config/**").permitAll()
