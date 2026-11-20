@@ -40,6 +40,9 @@ import java.util.UUID;
 @RequestMapping("/api/emergency")
 public class EmergencyVoiceController {
 
+    private static final org.slf4j.Logger log =
+        org.slf4j.LoggerFactory.getLogger(EmergencyVoiceController.class);
+
     private final BystanderReportRepository reports;
     private final EmergencyVoiceSessionRepository voiceSessions;
     private final EmergencySituationReportRepository sitreps;
@@ -78,6 +81,20 @@ public class EmergencyVoiceController {
             @PathVariable String incidentId,
             Authentication authentication,
             @Valid @RequestBody VoiceSessionRequest request) {
+        try {
+            return createVoiceSessionInner(incidentId, request);
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("voice session creation failed on {} : {}", incidentId,
+                e.getClass().getSimpleName());
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                "voice session failed: " + e.getClass().getSimpleName());
+        }
+    }
+
+    private ResponseEntity<Map<String, Object>> createVoiceSessionInner(
+            String incidentId, VoiceSessionRequest request) {
         var report = reports.findByReportId(incidentId)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                 "incident not found"));

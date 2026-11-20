@@ -17,6 +17,9 @@ import java.util.Map;
 @RequestMapping("/api/v1/config")
 public class EmergencyCallConfigController {
 
+    /** Bumped per release so the deployed version is verifiable from outside. */
+    public static final String BUILD_TAG = "2026-11-19-r2";
+
     @Value("${resqai.emergency-call.destination:}")
     private String destination;
 
@@ -40,6 +43,7 @@ public class EmergencyCallConfigController {
         return ResponseEntity.ok(Map.of(
             "destination", value,
             "smsTriggerNumber", twilioConfig.smsTriggerNumber() == null ? "" : twilioConfig.smsTriggerNumber(),
-            "source", "SERVER"));
+            "source", "SERVER",
+            "buildTag", BUILD_TAG));
     }
 }
