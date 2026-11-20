@@ -100,6 +100,9 @@ public class SarvamStreamingTtsService {
         private final AtomicLong lastActivity = new AtomicLong(System.currentTimeMillis());
         private volatile boolean configSent;
         private Thread watchdog;
+        /** Text queued while the connection/config completes (never lost). */
+        private final java.util.concurrent.ConcurrentLinkedQueue<String> pendingText =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
 
         Stream(String languageCode, Listener listener) {
             this.languageCode = languageCode;
@@ -162,25 +165,23 @@ public class SarvamStreamingTtsService {
                 data.put("max_chunk_length", 120);
                 ws.sendText(mapper.writeValueAsString(config), true);
                 configSent = true;
+                // Drain anything queued while the connection was opening.
+                String queued;
+                while ((queued = pendingText.poll()) != null) {
+                    sendNow(queued);
+                }
             } catch (Exception e) {
                 listener.onError("TTS config failed: " + e.getMessage());
             }
         }
 
-        /** Synthesizes one utterance (whole reply text, max ~2500 chars). */
-        public void speak(String text) {
-            WebSocket ws = socket.get();
-            if (ws == null || !configSent) {
-                listener.onError("TTS stream not ready");
-                return;
-            }
+        private void sendNow(String clean) {
             try {
-                String clean = text == null ? "" : text.trim();
-                if (clean.isEmpty()) return;
-                if (clean.length() > 2500) clean = clean.substring(0, 2500);
                 ObjectNode msg = mapper.createObjectNode();
                 msg.put("type", "text");
                 msg.putObject("data").put("text", clean);
+                WebSocket ws = socket.get();
+                if (ws == null) return;
                 ws.sendText(mapper.writeValueAsString(msg), true);
                 ObjectNode flush = mapper.createObjectNode();
                 flush.put("type", "flush");
@@ -189,6 +190,22 @@ public class SarvamStreamingTtsService {
             } catch (Exception e) {
                 listener.onError("TTS send failed: " + e.getMessage());
             }
+        }
+
+        /** Synthesizes one utterance (whole reply text, max ~2500 chars).
+         *  If the connection/config is not ready yet, the text is QUEUED and
+         *  sent the moment the stream is ready - early speak() calls after
+         *  open() must never be lost (that made the AI go silent). */
+        public void speak(String text) {
+            String clean = text == null ? "" : text.trim();
+            if (clean.isEmpty()) return;
+            if (clean.length() > 2500) clean = clean.substring(0, 2500);
+            WebSocket ws = socket.get();
+            if (ws == null || !configSent) {
+                pendingText.offer(clean);
+                return;
+            }
+            sendNow(clean);
         }
 
         /** Interrupts the current utterance (barge-in): buffer is abandoned. */
