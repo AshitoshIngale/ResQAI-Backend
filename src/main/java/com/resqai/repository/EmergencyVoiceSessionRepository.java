@@ -13,5 +13,9 @@ public interface EmergencyVoiceSessionRepository
     /** Short-lived bearer token lookup for the WebSocket handshake. */
     Optional<EmergencyVoiceSessionDocument> findBySessionToken(String sessionToken);
 
-    Optional<EmergencyVoiceSessionDocument> findByIncidentId(String incidentId);
+    /** All sessions for an incident (a genuine later emergency creates a new one). */
+    java.util.List<EmergencyVoiceSessionDocument> findByIncidentIdOrderByStartedAtDesc(
+            String incidentId);
+
+    Optional<EmergencyVoiceSessionDocument> findByIncidentIdAndState(String incidentId, String state);
 }

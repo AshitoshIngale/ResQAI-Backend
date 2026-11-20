@@ -78,7 +78,8 @@ public class EmergencyFollowUpScheduler {
         jobs.save(job);
 
         try {
-            var sessionOpt = voiceSessions.findByIncidentId(job.getIncidentId());
+            var sessionOpt = voiceSessions.findByIncidentIdOrderByStartedAtDesc(job.getIncidentId())
+                .stream().findFirst();
             if (sessionOpt.isEmpty()) {
                 job.setState(EmergencyFollowUpJobDocument.STATE_SKIPPED);
                 job.setExecutedAt(Instant.now());

@@ -119,7 +119,8 @@ public class EmergencyVoiceController {
         // DISCONNECTED sessions resume as the SAME session (conversation
         // and jobs preserved); only ENDED sessions create a fresh one.
         java.util.Optional<EmergencyVoiceSessionDocument> existing =
-            voiceSessions.findByIncidentId(incidentId);
+            voiceSessions.findByIncidentIdOrderByStartedAtDesc(incidentId)
+                .stream().findFirst();
         if (existing.isPresent() && !existing.get().isEnded()
             && existing.get().getExpiresAt() != null
             && existing.get().getExpiresAt().isAfter(Instant.now())) {
@@ -168,7 +169,7 @@ public class EmergencyVoiceController {
         requireAuth(authentication);
         return ResponseEntity.ok(Map.of(
             "timeline", timeline.findByIncidentId(incidentId),
-            "sessions", voiceSessions.findByIncidentId(incidentId)));
+            "sessions", voiceSessions.findByIncidentIdOrderByStartedAtDesc(incidentId)));
     }
 
     /** All situation reports (with honest delivery statuses). */
@@ -235,7 +236,8 @@ public class EmergencyVoiceController {
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "incident not found"));
         sitrepService.recordTimeline(incidentId, "RESPONDER_CONFIRMED",
             "Emergency closed by the patient's account", false);
-        voiceSessions.findByIncidentId(incidentId).ifPresent(session -> {
+        voiceSessions.findByIncidentIdOrderByStartedAtDesc(incidentId)
+            .stream().findFirst().ifPresent(session -> {
             if ("ACTIVE".equals(session.getState())) {
                 session.setState("ENDED");
                 session.setEndReason("EMERGENCY_CLOSED");
