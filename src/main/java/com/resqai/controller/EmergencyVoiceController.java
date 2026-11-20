@@ -98,11 +98,12 @@ public class EmergencyVoiceController {
         var victim = users.findByEmergencyCode(report.getEmergencyCode())
             .filter(UserDocument::isEnabled).orElse(null);
 
-        // Idempotent: one ACTIVE session per incident (reconnect after a
-        // browser refresh or network loss reuses the same session).
+        // Idempotent + RECONNECT support (spec PART 9): ACTIVE or
+        // DISCONNECTED sessions resume as the SAME session (conversation
+        // and jobs preserved); only ENDED sessions create a fresh one.
         java.util.Optional<EmergencyVoiceSessionDocument> existing =
             voiceSessions.findByIncidentId(incidentId);
-        if (existing.isPresent() && "ACTIVE".equals(existing.get().getState())
+        if (existing.isPresent() && !existing.get().isEnded()
             && existing.get().getExpiresAt() != null
             && existing.get().getExpiresAt().isAfter(Instant.now())) {
             Map<String, Object> out2 = new LinkedHashMap<>();

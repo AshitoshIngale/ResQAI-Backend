@@ -139,6 +139,7 @@ public class EmergencyVoiceSessionDocument {
     public void setStartedAt(Instant startedAt) { this.startedAt = startedAt; }
     public Instant getLastActivityAt() { return lastActivityAt; }
     public void setLastActivityAt(Instant lastActivityAt) { this.lastActivityAt = lastActivityAt; }
+    public boolean isEnded() { return "ENDED".equals(state); }
     public Instant getEndedAt() { return endedAt; }
     public void setEndedAt(Instant endedAt) { this.endedAt = endedAt; }
     public Instant getExpiresAt() { return expiresAt; }

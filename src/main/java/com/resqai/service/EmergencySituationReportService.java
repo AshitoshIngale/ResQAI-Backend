@@ -149,24 +149,36 @@ public class EmergencySituationReportService {
         return reports.save(report);
     }
 
-    /** Persists the scheduler jobs for a new AI session (restart-survivable). */
+    /** Persists the scheduler jobs for a new AI session (restart-survivable).
+     *  IDEMPOTENT: only missing job types are created - the uniq
+     *  {incidentId, jobType} index rejects duplicates and reconnections
+     *  must never 500. */
     public void scheduleFollowUps(EmergencyVoiceSessionDocument session) {
         try {
             Instant now = Instant.now();
-            var fiveMin = new EmergencyFollowUpJobDocument();
-            fiveMin.setIncidentId(session.getIncidentId());
-            fiveMin.setType(EmergencyFollowUpJobDocument.TYPE_FIVE_MINUTE);
-            fiveMin.setSessionId(session.getSessionId());
-            fiveMin.setDueAt(now.plusSeconds(300));
-            fiveMin.setIdempotencyKey(session.getIncidentId() + ":FIVE_MINUTE_REPORT");
-            followUpJobs.save(fiveMin);
-            var twentyMin = new EmergencyFollowUpJobDocument();
-            twentyMin.setIncidentId(session.getIncidentId());
-            twentyMin.setType(EmergencyFollowUpJobDocument.TYPE_TWENTY_MINUTE);
-            twentyMin.setSessionId(session.getSessionId());
-            twentyMin.setDueAt(now.plusSeconds(1200));
-            twentyMin.setIdempotencyKey(session.getIncidentId() + ":TWENTY_MIN_FOLLOWUP");
-            followUpJobs.save(twentyMin);
+            var existing = followUpJobs.findByIncidentId(session.getIncidentId());
+            boolean has5Min = existing.stream().anyMatch(j ->
+                EmergencyFollowUpJobDocument.TYPE_FIVE_MINUTE.equals(j.getType()));
+            boolean has20Min = existing.stream().anyMatch(j ->
+                EmergencyFollowUpJobDocument.TYPE_TWENTY_MINUTE.equals(j.getType()));
+            if (!has5Min) {
+                var fiveMin = new EmergencyFollowUpJobDocument();
+                fiveMin.setIncidentId(session.getIncidentId());
+                fiveMin.setType(EmergencyFollowUpJobDocument.TYPE_FIVE_MINUTE);
+                fiveMin.setSessionId(session.getSessionId());
+                fiveMin.setDueAt(now.plusSeconds(300));
+                fiveMin.setIdempotencyKey(session.getIncidentId() + ":FIVE_MINUTE_REPORT");
+                followUpJobs.save(fiveMin);
+            }
+            if (!has20Min) {
+                var twentyMin = new EmergencyFollowUpJobDocument();
+                twentyMin.setIncidentId(session.getIncidentId());
+                twentyMin.setType(EmergencyFollowUpJobDocument.TYPE_TWENTY_MINUTE);
+                twentyMin.setSessionId(session.getSessionId());
+                twentyMin.setDueAt(now.plusSeconds(1200));
+                twentyMin.setIdempotencyKey(session.getIncidentId() + ":TWENTY_MIN_FOLLOWUP");
+                followUpJobs.save(twentyMin);
+            }
         } catch (Exception e) {
             log.warn("follow-up job scheduling failed: {}", e.getMessage());
         }
