@@ -5,10 +5,13 @@ import com.resqai.model.EmergencyVoiceSessionDocument;
 import com.resqai.model.VoiceConversationHistoryDocument;
 import com.resqai.repository.EmergencyVoiceSessionRepository;
 import com.resqai.repository.VoiceConversationHistoryRepository;
+import com.resqai.service.AudioWavUtil;
 import com.resqai.service.EmergencyConversationService;
+import com.resqai.service.EmergencyFirstAidService;
 import com.resqai.service.EmergencySituationReportService;
 import com.resqai.service.FirstAidOrchestrator;
-import com.resqai.service.SarvamStreamingSttService;
+import com.resqai.service.GeminiFirstAidService;
+import com.resqai.service.SarvamSpeechService;
 import com.resqai.service.SarvamStreamingTtsService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,67 +20,107 @@ import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
-import org.springframework.web.socket.handler.AbstractWebSocketHandler;
+import org.springframework.web.socket.handler.BinaryWebSocketHandler;
 
+import java.io.ByteArrayOutputStream;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * The real-time voice bridge for the browser-based AI first-aid conversation
- * (spec PART 4-7): the bystander speaks in the app; PCM audio streams over
- * this WebSocket to Sarvam streaming STT; the deterministic conversation
- * engine decides the next response; Sarvam streaming TTS speaks it back as
- * audio chunks the browser plays immediately (barge-in via STT speech start).
+ * The real-time voice bridge for the browser/native AI first-aid conversation
+ * (spec PART 7, architecture Option B - native variant): the bystander speaks
+ * in the app; PCM16 16 kHz mono audio streams over this WebSocket; the server
+ * buffers utterances with silence detection, transcribes each utterance with
+ * Sarvam REST STT (verified word-perfect), and the CONVERSATION BRAIN replies:
+ * Gemini (user's own API, KB-restricted, safety post-validated) with a
+ * deterministic fallback when Gemini is unavailable or violates safety.
+ * The reply is spoken by Sarvam streaming TTS and streamed back as audio.
  *
  * Twilio is NOT part of this conversation - it remains only for the
  * ambulance telephone integration (spec architecture decision, Option B).
  *
- * Protocol (all JSON text frames + raw PCM16 binary frames):
- *   client -> {"type":"start","language":"en","consent":true}
+ * Protocol (JSON text frames + raw PCM16 binary frames):
+ *   client -> {"type":"start","token":...,"language":"en","consent":true}
  *   client -> binary PCM16 16 kHz mono chunks (while not muted)
  *   client -> {"type":"end"}
  *   server -> {"type":"status","value":"LISTENING|PROCESSING|SPEAKING|RECONNECTING"}
- *   server -> {"type":"barge_in"}
  *   server -> {"type":"transcript","role":"bystander","text":...}
  *   server -> {"type":"ai","text":...,"audio":"<base64 mp3>","urgent":bool}
- *   server -> {"type":"followup","message":...}
+ *   server -> {"type":"session","patientName":...,"emergencyId":...}
  *   server -> {"type":"error","message":...}
  */
 @Component
-public class EmergencyVoiceWebSocketHandler extends AbstractWebSocketHandler {
+public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(EmergencyVoiceWebSocketHandler.class);
     private static final int SAMPLE_RATE = 16000;
+    /** 100 ms of PCM16 mono at 16 kHz. */
+    private static final int FRAME_MS = 100;
+    /** RMS above this counts as speech (16-bit PCM). */
+    private static final double SPEECH_RMS = 500.0;
+    /** Utterance ends after this many consecutive quiet frames (1.2 s). */
+    private static final int QUIET_FRAMES_TO_END = 12;
+    /** Minimum speech frames before an utterance is accepted (0.8 s). */
+    private static final int MIN_SPEECH_FRAMES = 8;
+    /** Hard cap: 20 s per utterance. */
+    private static final int MAX_SPEECH_FRAMES = 200;
 
     private final EmergencyVoiceSessionRepository sessionRepository;
     private final VoiceConversationHistoryRepository historyRepository;
-    private final SarvamStreamingSttService sttService;
+    private final SarvamSpeechService sarvamSpeech;
     private final SarvamStreamingTtsService ttsService;
     private final EmergencyConversationService conversation;
+    private final GeminiFirstAidService gemini;
     private final EmergencySituationReportService sitrepService;
+    private final com.resqai.repository.BystanderReportRepository reports;
+    private final com.resqai.repository.UserRepository users;
+    private final com.resqai.repository.EmergencyProfileRepository profiles;
+    private final EmergencyFirstAidService firstAidService;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** Live WS contexts keyed by the WebSocket session id. */
     private final Map<String, VoiceContext> contexts = new ConcurrentHashMap<>();
 
+    public EmergencyVoiceWebSocketHandler(
+            EmergencyVoiceSessionRepository sessionRepository,
+            VoiceConversationHistoryRepository historyRepository,
+            SarvamSpeechService sarvamSpeech,
+            SarvamStreamingTtsService ttsService,
+            EmergencyConversationService conversation,
+            GeminiFirstAidService gemini,
+            EmergencySituationReportService sitrepService,
+            com.resqai.repository.BystanderReportRepository reports,
+            com.resqai.repository.UserRepository users,
+            com.resqai.repository.EmergencyProfileRepository profiles,
+            EmergencyFirstAidService firstAidService) {
+        this.firstAidService = firstAidService;
+        this.sessionRepository = sessionRepository;
+        this.historyRepository = historyRepository;
+        this.sarvamSpeech = sarvamSpeech;
+        this.ttsService = ttsService;
+        this.conversation = conversation;
+        this.gemini = gemini;
+        this.sitrepService = sitrepService;
+        this.reports = reports;
+        this.users = users;
+        this.profiles = profiles;
+    }
+
     private static class VoiceContext {
         WebSocketSession ws;
         EmergencyVoiceSessionDocument session;
-        SarvamStreamingSttService.Stream stt;
         SarvamStreamingTtsService.Stream tts;
-        /** Buffers the current utterance while streaming to STT. */
-        java.io.ByteArrayOutputStream pcmBuffer = new java.io.ByteArrayOutputStream();
-        long speechStartMs = 0;
+        ByteArrayOutputStream pcmBuffer = new ByteArrayOutputStream();
         boolean inUtterance = false;
+        int speechFrames = 0;
+        int quietFrames = 0;
         boolean muted = false;
     }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession ws) {
-        // Token validation happens on the first "start" message (the session
-        // token arrives as a query parameter but is checked against Mongo).
         sendJson(ws, Map.of("type", "status", "value", "CONNECTED"));
     }
 
@@ -147,87 +190,117 @@ public class EmergencyVoiceWebSocketHandler extends AbstractWebSocketHandler {
         sessionRepository.save(session);
         contexts.put(ws.getId(), ctx);
 
-        // Sarvam streaming STT: final transcripts drive the conversation.
-        ctx.stt = sttService.open(language, new SarvamStreamingSttService.Listener() {
-            @Override public void onPartial(String text) {
-                sendJson(ws, Map.of("type", "partial", "role", "bystander", "text", text));
-            }
-            @Override public void onFinal(String text, String detectedLanguage) {
-                sendJson(ws, Map.of("type", "transcript", "role", "bystander", "text", text));
-                handleUtterance(ctx, text);
-            }
-            @Override public void onSpeechStart() {
-                // Barge-in: the browser stops TTS playback the moment the
-                // bystander starts speaking.
-                sendJson(ws, Map.of("type", "barge_in"));
-                sendJson(ws, Map.of("type", "status", "value", "LISTENING"));
-            }
-            @Override public void onSpeechEnd() { }
-            @Override public void onReady() {
-                sendJson(ws, Map.of("type", "status", "value", "LISTENING"));
-            }
-            @Override public void onFatalError(String message) {
-                sendJson(ws, Map.of("type", "error", "message",
-                    "Speech recognition is unavailable: " + message));
-            }
-            @Override public void onTransientError(String message) {
-                sendJson(ws, Map.of("type", "status", "value", "RECONNECTING"));
-            }
-        });
-
-        // Intro + first question spoken through TTS.
         String intro = conversation.intro(language);
         logHistory(session, "AGENT", intro);
-        speak(ctx, intro, false);
         sendJson(ws, Map.of(
             "type", "session",
             "sessionId", session.getSessionId(),
             "patientName", session.getVictimName() == null ? "" : session.getVictimName(),
             "emergencyId", session.getVictimEmergencyId() == null ? "" : session.getVictimEmergencyId(),
             "language", language));
+        speak(ctx, intro, false);
+        sendJson(ws, Map.of("type", "status", "value", "LISTENING"));
         log.info("voice session started: {}", session.getSessionId());
     }
 
-    private void handleUtterance(VoiceContext ctx, String transcript) {
-        var session = ctx.session;
-        session.setLastActivityAt(Instant.now());
-        sendJson(ctx.ws, Map.of("type", "status", "value", "PROCESSING"));
+    /** Binary PCM frame: buffer it; utterances are finalized on silence. */
+    @Override
+    protected void handleBinaryMessage(WebSocketSession ws, BinaryMessage message) {
+        VoiceContext ctx = contexts.get(ws.getId());
+        if (ctx == null || ctx.muted || ctx.session == null) return;
+        byte[] pcm = new byte[message.getPayload().remaining()];
+        message.getPayload().get(pcm);
 
-        // The AI conversation must not run on the WS listener thread.
-        Thread.ofVirtual().name("resqai-agent-turn").start(() -> {
+        double rms = rms(pcm);
+        boolean isSpeech = rms > SPEECH_RMS;
+
+        if (!ctx.inUtterance) {
+            if (isSpeech) {
+                ctx.inUtterance = true;
+                ctx.speechFrames = 1;
+                ctx.quietFrames = 0;
+                ctx.pcmBuffer.reset();
+                ctx.pcmBuffer.write(pcm, 0, pcm.length);
+                sendJson(ctx.ws, Map.of("type", "status", "value", "PROCESSING"));
+            }
+            return;
+        }
+
+        ctx.pcmBuffer.write(pcm, 0, pcm.length);
+        ctx.speechFrames++;
+        if (isSpeech) ctx.quietFrames = 0; else ctx.quietFrames++;
+
+        boolean longEnough = ctx.speechFrames >= MIN_SPEECH_FRAMES;
+        boolean enoughQuiet = ctx.quietFrames >= QUIET_FRAMES_TO_END;
+        boolean tooLong = ctx.speechFrames >= MAX_SPEECH_FRAMES;
+        if ((longEnough && enoughQuiet) || tooLong) {
+            ctx.inUtterance = false;
+            byte[] utterance = ctx.pcmBuffer.toByteArray();
+            ctx.pcmBuffer.reset();
+            ctx.speechFrames = 0;
+            ctx.quietFrames = 0;
+            finalizeUtterance(ctx, utterance);
+        }
+    }
+
+    /** STT + brain + TTS run off the WS thread; the socket stays responsive. */
+    private void finalizeUtterance(VoiceContext ctx, byte[] utterancePcm) {
+        var session = ctx.session;
+        sendJson(ctx.ws, Map.of("type", "status", "value", "PROCESSING"));
+        Thread.ofVirtual().name("resqai-voice-turn").start(() -> {
             try {
-                var reportOpt = sessionRepository.findById(session.getId()) == null
-                    ? java.util.Optional.empty()
-                    : java.util.Optional.of(session);
-                String category = reportCategory(session);
-                FirstAidOrchestrator.MedicalContext medical = medicalContext(session);
-                // Deliver any scheduler-queued follow-up first (20-min
-                // follow-up while the session stays ACTIVE).
-                if (session.getPendingAgentMessage() != null
-                    && !session.getPendingAgentMessage().isBlank()) {
-                    String pendingMsg = session.getPendingAgentMessage();
-                    session.setPendingAgentMessage(null);
-                    sessionRepository.save(session);
-                    logHistory(session, "AGENT", pendingMsg);
-                    speak(ctx, pendingMsg, false);
+                String langCode = switch (session.getLanguage() == null ? "en" : session.getLanguage()) {
+                    case "hi" -> "hi-IN";
+                    case "mr" -> "mr-IN";
+                    default -> "en-IN";
+                };
+                byte[] wav = AudioWavUtil.pcm16ToWav(utterancePcm, SAMPLE_RATE, 1);
+                var stt = sarvamSpeech.transcribe(wav, langCode);
+                String transcript = stt.transcript();
+                if (transcript == null || transcript.isBlank()) {
+                    // Honest: the utterance could not be transcribed.
+                    sendJson(ctx.ws, Map.of("type", "status", "value", "LISTENING"));
+                    return;
                 }
-                EmergencyConversationService.AgentTurn turn =
-                    conversation.handleUtterance(session, category, medical, transcript);
+                sendJson(ctx.ws, Map.of("type", "transcript", "role", "bystander", "text", transcript));
+                logHistory(session, "BYSTANDER", transcript);
+
+                var reportOpt = reports.findByReportId(session.getIncidentId());
+                String category = reportOpt.map(r -> r.getCategory()).orElse("OTHER");
+                FirstAidOrchestrator.MedicalContext medical = medicalContext(session.getEmergencyCode());
+
+                // Facts first (shared by both brains), then the reply.
+                conversation.updateFacts(session, transcript);
+                boolean redFlag = firstAidService.isRedFlagUtterance(transcript);
+                boolean urgent = redFlag;
+
+                String reply = null;
+                if (gemini.isConfigured()) {
+                    reply = gemini.reply(session, category, medical, transcript);
+                }
+                if (reply == null || reply.isBlank()) {
+                    // Deterministic fallback: reviewed KB guidance - never silence.
+                    var turn = conversation.handleUtterance(session, category, medical, transcript);
+                    reply = turn.speech;
+                    urgent = urgent || turn.urgent;
+                } else {
+                    logHistory(session, "AGENT", reply);
+                }
 
                 sitrepService.recordTimeline(session.getIncidentId(),
-                    "BYSTANDER_REPORTED", turn.timelineEntry, turn.urgent);
-                // Serious deterioration: immediate URGENT situation report
-                // through the Twilio channel (never waits for the 5-min job).
-                if (turn.urgent) {
-                    var urgent = sitrepService.generate(session, "URGENT", true);
-                    sitrepService.relay(urgent, sitrepService.ambulanceDestination());
+                    "BYSTANDER_REPORTED", transcript, redFlag);
+                if (urgent) {
+                    var urgentReport = sitrepService.generate(session, "URGENT", true);
+                    sitrepService.relay(urgentReport, sitrepService.ambulanceDestination());
+                    session.setUrgentFlagged(true);
                 }
-                logHistory(session, "AGENT", turn.speech);
-                speak(ctx, turn.speech, turn.urgent);
+
+                speak(ctx, reply, urgent);
             } catch (Exception e) {
-                log.error("agent turn failed: {}", e.getMessage());
+                log.error("voice turn failed: {}", e.getMessage());
                 sendJson(ctx.ws, Map.of("type", "error",
                     "message", "The assistant could not process that. Please repeat."));
+                sendJson(ctx.ws, Map.of("type", "status", "value", "LISTENING"));
             }
         });
     }
@@ -255,28 +328,43 @@ public class EmergencyVoiceWebSocketHandler extends AbstractWebSocketHandler {
         ctx.tts.speak(text);
     }
 
-    @Override
-    protected void handleBinaryMessage(WebSocketSession ws, BinaryMessage message) {
-        VoiceContext ctx = contexts.get(ws.getId());
-        if (ctx == null || ctx.stt == null || ctx.muted) return;
-        byte[] pcm = message.getPayload().array();
-        ctx.stt.sendAudio(pcm);
+    private double rms(byte[] pcm) {
+        if (pcm == null || pcm.length < 2) return 0;
+        long sum = 0;
+        int samples = pcm.length / 2;
+        for (int i = 0; i + 1 < pcm.length; i += 2) {
+            int sample = (short) ((pcm[i] & 0xFF) | (pcm[i + 1] << 8));
+            sum += (long) sample * sample;
+        }
+        return Math.sqrt((double) sum / Math.max(1, samples));
+    }
+
+    private FirstAidOrchestrator.MedicalContext medicalContext(String emergencyCode) {
+        return users.findByEmergencyCode(emergencyCode)
+            .filter(u -> u.isEnabled())
+            .map(v -> profiles.findByUserId(v.getId()).map(pr ->
+                new FirstAidOrchestrator.MedicalContext(
+                    pr.getBloodGroup(),
+                    pr.getAllergies() == null ? null : String.join(", ", pr.getAllergies()),
+                    pr.getMedicalConditions() == null ? java.util.List.of() : pr.getMedicalConditions(),
+                    pr.getCurrentMedications() == null ? java.util.List.of() : pr.getCurrentMedications()))
+                .orElse(new FirstAidOrchestrator.MedicalContext(null, null, java.util.List.of(), java.util.List.of())))
+            .orElse(new FirstAidOrchestrator.MedicalContext(null, null, java.util.List.of(), java.util.List.of()));
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession ws, CloseStatus status) {
         VoiceContext ctx = contexts.remove(ws.getId());
         if (ctx == null) return;
-        if (ctx.stt != null) try { ctx.stt.close(); } catch (Exception ignore) {}
         if (ctx.tts != null) try { ctx.tts.close(); } catch (Exception ignore) {}
         var session = ctx.session;
         if (session != null && "ACTIVE".equals(session.getState())) {
-            // Honest DISCONNECTED state: incident persists; the bystander
-            // may reconnect (browser refresh / network loss) - spec PART 9.
+            // Honest DISCONNECTED state: incident persists; the bystander may
+            // reconnect (browser refresh / network loss) - spec PART 9.
             session.setState("DISCONNECTED");
             session.setLastActivityAt(Instant.now());
             sessionRepository.save(session);
-            logHistory(session, "SYSTEM", "Browser disconnected; session kept for reconnection");
+            logHistory(session, "SYSTEM", "Connection lost; session kept for reconnection");
         }
     }
 
@@ -287,7 +375,6 @@ public class EmergencyVoiceWebSocketHandler extends AbstractWebSocketHandler {
         session.setEndedAt(Instant.now());
         sessionRepository.save(session);
         logHistory(session, "SYSTEM", "Session ended by bystander (" + reason + ")");
-        if (ctx.stt != null) try { ctx.stt.close(); } catch (Exception ignore) {}
         if (ctx.tts != null) try { ctx.tts.close(); } catch (Exception ignore) {}
     }
 
@@ -310,50 +397,5 @@ public class EmergencyVoiceWebSocketHandler extends AbstractWebSocketHandler {
         } catch (Exception e) {
             log.warn("history write failed: {}", e.getMessage());
         }
-    }
-
-    private String reportCategory(EmergencyVoiceSessionDocument session) {
-        return session.getReportId() == null ? "OTHER"
-            : java.util.Optional.ofNullable(
-                reports.findByReportId(session.getReportId()).orElse(null))
-            .map(r -> r.getCategory()).orElse("OTHER");
-    }
-
-    private FirstAidOrchestrator.MedicalContext medicalContext(EmergencyVoiceSessionDocument session) {
-        return users.findByEmergencyCode(session.getEmergencyCode())
-            .filter(u -> u.isEnabled())
-            .map(v -> profiles.findByUserId(v.getId()).map(pr ->
-                new FirstAidOrchestrator.MedicalContext(
-                    pr.getBloodGroup(),
-                    pr.getAllergies() == null ? null : String.join(", ", pr.getAllergies()),
-                    pr.getMedicalConditions() == null ? java.util.List.of() : pr.getMedicalConditions(),
-                    pr.getCurrentMedications() == null ? java.util.List.of() : pr.getCurrentMedications()))
-                .orElse(new FirstAidOrchestrator.MedicalContext(null, null, java.util.List.of(), java.util.List.of())))
-            .orElse(new FirstAidOrchestrator.MedicalContext(null, null, java.util.List.of(), java.util.List.of()));
-    }
-
-    private final com.resqai.repository.BystanderReportRepository reports;
-    private final com.resqai.repository.UserRepository users;
-    private final com.resqai.repository.EmergencyProfileRepository profiles;
-
-    public EmergencyVoiceWebSocketHandler(
-            EmergencyVoiceSessionRepository sessionRepository,
-            VoiceConversationHistoryRepository historyRepository,
-            SarvamStreamingSttService sttService,
-            SarvamStreamingTtsService ttsService,
-            EmergencyConversationService conversation,
-            EmergencySituationReportService sitrepService,
-            com.resqai.repository.BystanderReportRepository reports,
-            com.resqai.repository.UserRepository users,
-            com.resqai.repository.EmergencyProfileRepository profiles) {
-        this.sessionRepository = sessionRepository;
-        this.historyRepository = historyRepository;
-        this.sttService = sttService;
-        this.ttsService = ttsService;
-        this.conversation = conversation;
-        this.sitrepService = sitrepService;
-        this.reports = reports;
-        this.users = users;
-        this.profiles = profiles;
     }
 }

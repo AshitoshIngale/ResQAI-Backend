@@ -46,22 +46,15 @@ public class EmergencyConversationService {
         }
     }
 
-    /** Processes one free-text bystander utterance and produces the response. */
-    public AgentTurn handleUtterance(EmergencyVoiceSessionDocument session,
-                                     String category,
-                                     FirstAidOrchestrator.MedicalContext medical,
-                                     String transcript) {
-        String lang = session.getLanguage() == null ? "en" : session.getLanguage();
+    /** Keyword-based fact extraction from a free-text bystander utterance
+     *  (EN/HI/MR). Public: also used by the Gemini conversation path so facts
+     *  stay consistent no matter which brain handles the turn. */
+    public void updateFacts(EmergencyVoiceSessionDocument session, String transcript) {
         String text = transcript == null ? "" : transcript.toLowerCase();
         Map<String, String> facts = session.getCollectedFacts();
-        boolean urgent = false;
-        String timelineEntry = "Bystander reported: " + transcript;
-
-        // ---- free-text understanding (EN/HI/MR keywords) ----
         if (matchesAny(text, "not breathing", "no breathing", "isn't breathing",
                 "stopped breathing", "सांस नहीं", "सांस ले नहीं", "श्वास नाही")) {
             facts.put("breathing", "no");
-            urgent = true;
         } else if (matchesAny(text, "breathing", "सांस", "श्वास")) {
             facts.putIfAbsent("breathing", "yes");
         }
@@ -71,7 +64,6 @@ public class EmergencyConversationService {
         if (matchesAny(text, "unconscious", "not responding", "no response",
                 "collapsed", "बेहोश", "बेसुध", "बेशुद्ध", "प्रतिसाद नाही")) {
             facts.put("conscious", "no");
-            urgent = urgent || facts.containsKey("breathing");
         } else if (matchesAny(text, "conscious", "awake", "responding",
                 "जागरूक", "जवाब दे", "जागरूक आहेत")) {
             facts.put("conscious", "yes");
@@ -81,12 +73,32 @@ public class EmergencyConversationService {
         }
         if (matchesAny(text, "chest pain", "सीने में दर्द", "छातीत दुख")) {
             facts.put("chestPain", "yes");
-            urgent = true;
         }
         if (matchesAny(text, "slowing", "कम हो", "कमी होत")) {
             facts.put("bleedingSlowing", "yes");
         }
-        session.getObservations().add(transcript);
+        if (transcript != null && !transcript.isBlank()) {
+            session.getObservations().add(transcript);
+        }
+    }
+
+    /** Processes one free-text bystander utterance and produces the response. */
+    public AgentTurn handleUtterance(EmergencyVoiceSessionDocument session,
+                                     String category,
+                                     FirstAidOrchestrator.MedicalContext medical,
+                                     String transcript) {
+        String lang = session.getLanguage() == null ? "en" : session.getLanguage();
+        updateFacts(session, transcript);
+        Map<String, String> facts = session.getCollectedFacts();
+        boolean urgent = false;
+        String timelineEntry = "Bystander reported: " + transcript;
+
+        if ("no".equals(facts.get("breathing"))) {
+            urgent = true;
+        }
+        if ("no".equals(facts.get("conscious")) || "yes".equals(facts.get("chestPain"))) {
+            urgent = true;
+        }
 
         // ---- choose the next spoken response ----
         StringBuilder speech = new StringBuilder();
