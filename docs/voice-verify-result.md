@@ -1,0 +1,1 @@
+# Voice Session Verification\n\n- login: 401\n- users/me: 401, code=None...\n- report: 401 identity=None ambulance=None\n- voice session (no auth): 401, token=False, patient=None, reconnected=None\n- voice session replay: 401, reconnected=None\n- VERDICT: FAIL\n\n**VERDICT: FAIL**\n
