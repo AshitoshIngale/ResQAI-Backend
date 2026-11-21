@@ -11,6 +11,7 @@ import com.resqai.service.EmergencyFirstAidService;
 import com.resqai.service.EmergencySituationReportService;
 import com.resqai.service.FirstAidOrchestrator;
 import com.resqai.service.GeminiFirstAidService;
+import com.resqai.service.GeminiTtsService;
 import com.resqai.service.SarvamSpeechService;
 import com.resqai.service.SarvamStreamingTtsService;
 import org.slf4j.Logger;
@@ -74,6 +75,7 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
     private final SarvamStreamingTtsService ttsService;
     private final EmergencyConversationService conversation;
     private final GeminiFirstAidService gemini;
+    private final GeminiTtsService geminiTts;
     private final EmergencySituationReportService sitrepService;
     private final com.resqai.repository.BystanderReportRepository reports;
     private final com.resqai.repository.UserRepository users;
@@ -91,6 +93,7 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
             SarvamStreamingTtsService ttsService,
             EmergencyConversationService conversation,
             GeminiFirstAidService gemini,
+            GeminiTtsService geminiTts,
             EmergencySituationReportService sitrepService,
             com.resqai.repository.BystanderReportRepository reports,
             com.resqai.repository.UserRepository users,
@@ -103,6 +106,7 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
         this.ttsService = ttsService;
         this.conversation = conversation;
         this.gemini = gemini;
+        this.geminiTts = geminiTts;
         this.sitrepService = sitrepService;
         this.reports = reports;
         this.users = users;
@@ -313,6 +317,7 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
     private void speak(VoiceContext ctx, String text, boolean urgent) {
         sendJson(ctx.ws, Map.of("type", "status", "value", "SPEAKING"));
         if (ctx.tts != null) { try { ctx.tts.close(); } catch (Exception ignore) {} }
+        final String replyText = text;
         ctx.tts = ttsService.open(ctx.session.getLanguage(),
             new SarvamStreamingTtsService.Listener() {
                 @Override public void onAudioChunk(String base64Audio, String contentType) {
@@ -320,17 +325,46 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
                         "type", "ai_audio",
                         "audio", base64Audio,
                         "contentType", contentType,
+                        "ttsProvider", "sarvam",
                         "urgent", urgent));
                 }
                 @Override public void onUtteranceComplete() {
                     sendJson(ctx.ws, Map.of("type", "status", "value", "LISTENING"));
                 }
                 @Override public void onError(String message) {
-                    sendJson(ctx.ws, Map.of("type", "error", "message",
-                        "Speech playback failed: " + message));
+                    // Sarvam voice failed (credits/unavailable): fall back to
+                    // Gemini TTS, then to the app's own offline TTS - the
+                    // reply text is ALWAYS delivered one way or another.
+                    deliverFallbackVoice(ctx, replyText);
                 }
             });
         ctx.tts.speak(text);
+    }
+
+    /** Provider chain: Sarvam stream failed -> Gemini TTS one-shot ->
+     *  app-local TTS (ai_text). The reply text is always delivered. */
+    private void deliverFallbackVoice(VoiceContext ctx, String replyText) {
+        var session = ctx.session;
+        String lang = session.getLanguage() == null ? "en" : session.getLanguage();
+        if (geminiTts.isConfigured()) {
+            var result = geminiTts.synthesize(replyText, lang);
+            if (result != null && result.wav() != null && result.wav().length > 44) {
+                String audio = java.util.Base64.getEncoder().encodeToString(result.wav());
+                sendJson(ctx.ws, Map.of(
+                    "type", "ai_audio",
+                    "audio", audio,
+                    "contentType", "audio/wav",
+                    "ttsProvider", "gemini"));
+                sendJson(ctx.ws, Map.of("type", "status", "value", "LISTENING"));
+                return;
+            }
+        }
+        // Final fallback: the app speaks the reply with Android's offline TTS.
+        sendJson(ctx.ws, Map.of(
+            "type", "ai_text",
+            "text", replyText,
+            "ttsProvider", "app_local"));
+        sendJson(ctx.ws, Map.of("type", "status", "value", "LISTENING"));
     }
 
     private double rms(byte[] pcm) {
