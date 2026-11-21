@@ -59,18 +59,18 @@ jobs:
               lines.append(msg)
               print(msg, flush=True)
 
-          st, login = call("/auth/login", {
+          st, login = call("/v1/auth/login", {
               "identifier": os.environ["TEST_EMAIL"],
               "password": os.environ["TEST_PASSWORD"]})
           log(f"login: {st}")
           token = login.get("accessToken")
 
-          st, me = call("/users/me", token=token)
+          st, me = call("/v1/users/me", token=token)
           code = me.get("emergencyCode")
           log(f"users/me: {st}, code={str(code)[:6]}...")
 
           rid = str(uuid.uuid4())
-          st, rep = call("/bystander/reports", {
+          st, rep = call("/v1/bystander/reports", {
               "reportId": rid, "emergencyCode": code, "category": "ROAD_ACCIDENT",
               "latitude": 16.70, "longitude": 74.24,
               "clientCreatedAt": int(time.time()*1000), "source": "QR_SCAN",
@@ -80,13 +80,13 @@ jobs:
               f"ambulance={rep.get('callStatus')}")
 
           # APP PATH (v1 prefix), NO AUTH HEADER - the exact request the app makes
-          st, vs = call(f"/emergency/{rid}/voice/session",
+          st, vs = call(f"/v1/emergency/{rid}/voice/session",
                         {"language": "en", "micConsent": True})
           token_ok = bool(vs.get("token"))
           log(f"voice session (no auth): {st}, token={token_ok}, "
               f"patient={vs.get('patientName')}, reconnected={vs.get('reconnected')}")
 
-          st2, vs2 = call(f"/emergency/{rid}/voice/session",
+          st2, vs2 = call(f"/v1/emergency/{rid}/voice/session",
                           {"language": "en", "micConsent": True})
           log(f"voice session replay: {st2}, reconnected={vs2.get('reconnected')}")
 
