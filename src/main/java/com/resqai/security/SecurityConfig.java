@@ -61,8 +61,8 @@ public class SecurityConfig {
                 // The WS itself authenticates with the short-lived session token.
                 .requestMatchers(
                     org.springframework.http.HttpMethod.POST,
-                    "/api/emergency/*/voice/session").permitAll()
-                .requestMatchers("/api/emergency/**").authenticated()
+                    "/api/v1/emergency/*/voice/session").permitAll()
+                .requestMatchers("/api/v1/emergency/**").authenticated()
                 .requestMatchers("/ws/emergency/**").permitAll()
                 .requestMatchers("/api/v1/config/**").permitAll()
                 .requestMatchers("/api/v1/users/**").authenticated()

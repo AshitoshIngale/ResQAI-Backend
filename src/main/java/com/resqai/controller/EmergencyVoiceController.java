@@ -37,7 +37,7 @@ import java.util.UUID;
  * responder roles are a future phase).
  */
 @RestController
-@RequestMapping("/api/emergency")
+@RequestMapping("/api/v1/emergency")
 public class EmergencyVoiceController {
 
     private static final org.slf4j.Logger log =
