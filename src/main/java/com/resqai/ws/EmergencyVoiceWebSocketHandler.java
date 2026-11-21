@@ -21,6 +21,7 @@ import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.BinaryWebSocketHandler;
+import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
 
 import java.io.ByteArrayOutputStream;
 import java.time.Instant;
@@ -181,7 +182,11 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
         }
 
         VoiceContext ctx = new VoiceContext();
-        ctx.ws = ws;
+        // All sends (status, transcripts, AI audio) happen from MULTIPLE
+        // threads (STT callbacks, agent turn, TTS stream). Raw sessions are
+        // single-threaded - concurrent sends kill the connection. The
+        // decorator serializes them with an overflow buffer.
+        ctx.ws = new ConcurrentWebSocketSessionDecorator(ws, 8000, 512 * 1024);
         ctx.session = session;
         session.setLanguage(language);
         session.setConsentAt(Instant.now());

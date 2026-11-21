@@ -54,6 +54,47 @@ public class GeminiFirstAidService {
         return !apiKey.isBlank();
     }
 
+    /** Models listed by the key's account, resolved once (Google rotates
+     *  model names - a hardcoded name 404s, as gemini-2.0-flash did). */
+    private volatile String resolvedModel;
+
+    private String resolveModel() {
+        String chosen = resolvedModel;
+        if (chosen != null) return chosen;
+        try {
+            String url = "https://generativelanguage.googleapis.com/v1beta/models";
+            ProviderHttpClient.ProviderResponse response = http.send(
+                "GET", url, "application/json", null, new byte[0]);
+            if (response.statusCode >= 200 && response.statusCode < 300) {
+                JsonNode models = mapper.readTree(response.body).path("models");
+                List<String> flashes = new java.util.ArrayList<>();
+                models.forEach(m -> {
+                    String name = m.path("name").asText("");
+                    boolean generateOk = false;
+                    for (JsonNode method : m.path("supportedGenerationMethods")) {
+                        if ("generateContent".equals(method.asText())) generateOk = true;
+                    }
+                    if (generateOk && name.contains("flash")) flashes.add(name);
+                });
+                // Preference: newest flash lineage first.
+                chosen = flashes.stream()
+                    .filter(n -> n.contains("gemini-2.5")).findFirst()
+                    .or(() -> flashes.stream().filter(n -> n.contains("gemini-2.0")).findFirst())
+                    .or(() -> flashes.stream().filter(n -> n.contains("gemini-1.5")).findFirst())
+                    .orElse(null);
+                if (chosen != null) {
+                    chosen = chosen.replace("models/", "");
+                    resolvedModel = chosen;
+                    log.info("Gemini model resolved from ListModels: {}", chosen);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Gemini ListModels probe failed: {}", e.getMessage());
+        }
+        if (chosen == null) chosen = model; // fall back to the configured name
+        return chosen;
+    }
+
     public String model() {
         return model;
     }
@@ -80,9 +121,9 @@ public class GeminiFirstAidService {
                 "temperature", 0.3,
                 "maxOutputTokens", 180));
 
-            String url = String.format(API_URL, model) + "?key=" + apiKey;
+            String url = String.format(API_URL, resolveModel());
             ProviderHttpClient.ProviderResponse response = http.send(
-                "POST", url, "application/json", null,
+                "POST", url, "application/json", "api-subscription-key " + apiKey,
                 mapper.writeValueAsBytes(body));
 
             if (response.statusCode == 400 || response.statusCode == 403
