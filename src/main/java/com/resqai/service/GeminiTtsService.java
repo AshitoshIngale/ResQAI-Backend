@@ -79,10 +79,21 @@ public class GeminiTtsService {
             String b64 = part.path("inlineData").path("data").asText("");
             if (b64.isBlank()) return null;
             byte[] raw = java.util.Base64.getDecoder().decode(b64);
-            // Gemini returns PCM 32-bit float little-endian at 24 kHz mono.
             int rate = parseRate(mime, 24000);
-            byte[] wav16 = float32ToPcm16Wav(raw, rate);
-            return new TtsResult(wav16, "gemini-tts:" + voiceName + "@" + rate);
+            // Gemini TTS variants differ: some return a COMPLETE WAV, some raw
+            // 16-bit PCM (audio/L16), some 32-bit float PCM. Handle each shape
+            // explicitly - a wrong assumption crashes the whole reply voice.
+            String lower = mime == null ? "" : mime.toLowerCase();
+            byte[] wav;
+            if (lower.contains("wav")) {
+                wav = raw;                       // already a full WAV file
+            } else if (lower.contains("l16") || lower.contains("pcm")) {
+                wav = pcm16ToWav(raw, rate);     // raw 16-bit LE PCM samples
+            } else {
+                wav = float32ToPcm16Wav(raw, rate);
+            }
+            return new TtsResult(wav, "gemini-tts:" + voiceName + "@" + rate
+                + " (" + (mime.isBlank() ? "unknown" : mime) + ")");
         } catch (Exception e) {
             log.warn("Gemini TTS failed: {}", e.getMessage());
             return null;
@@ -93,6 +104,26 @@ public class GeminiTtsService {
         if (mime == null) return fallback;
         var m = java.util.regex.Pattern.compile("rate=(\\d+)").matcher(mime);
         return m.find() ? Integer.parseInt(m.group(1)) : fallback;
+    }
+
+    /** Raw 16-bit LE PCM samples -> 16-bit PCM WAV (header + verbatim data). */
+    static byte[] pcm16ToWav(byte[] pcm, int sampleRate) {
+        byte[] out = new byte[44 + pcm.length];
+        out[0] = 'R'; out[1] = 'I'; out[2] = 'F'; out[3] = 'F';
+        writeInt(out, 4, 36 + pcm.length);
+        out[8] = 'W'; out[9] = 'A'; out[10] = 'V'; out[11] = 'E';
+        out[12] = 'f'; out[13] = 'm'; out[14] = 't'; out[15] = ' ';
+        writeInt(out, 16, 16);
+        out[20] = 1; out[21] = 0;                     // PCM
+        out[22] = 1; out[23] = 0;                     // mono
+        writeInt(out, 24, sampleRate);
+        writeInt(out, 28, sampleRate * 2);
+        out[32] = 2; out[33] = 0;
+        out[34] = 16; out[35] = 0;
+        out[36] = 'd'; out[37] = 'a'; out[38] = 't'; out[39] = 'a';
+        writeInt(out, 40, pcm.length);
+        System.arraycopy(pcm, 0, out, 44, pcm.length);
+        return out;
     }
 
     /** 32-bit float LE samples -> 16-bit PCM WAV (simple, clamped). */
@@ -115,10 +146,10 @@ public class GeminiTtsService {
         writeInt(out, 40, floatCount * 2);
         for (int i = 0; i < floatCount; i++) {
             int off = i * 4;
-            int bits = (floatPcm[44 + off] & 0xFF)
-                | ((floatPcm[45 + off] & 0xFF) << 8)
-                | ((floatPcm[46 + off] & 0xFF) << 16)
-                | ((floatPcm[47 + off] & 0xFF) << 24);
+            int bits = (floatPcm[off] & 0xFF)
+                | ((floatPcm[off + 1] & 0xFF) << 8)
+                | ((floatPcm[off + 2] & 0xFF) << 16)
+                | ((floatPcm[off + 3] & 0xFF) << 24);
             float sample = Float.intBitsToFloat(bits);
             int v = Math.round(sample * 32767f);
             if (v > 32767) v = 32767;

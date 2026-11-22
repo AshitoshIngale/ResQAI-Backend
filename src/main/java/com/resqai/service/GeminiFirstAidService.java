@@ -45,24 +45,36 @@ public class GeminiFirstAidService {
             @Qualifier("geminiHttp") ProviderHttpClient http,
             EmergencyFirstAidService firstAidKb,
             @Value("${resqai.gemini.api-key:}") String apiKey,
-            @Value("${resqai.gemini.model:gemini-2.0-flash}") String model) {
+            @Value("${resqai.gemini.model:gemini-flash-lite-latest}") String model) {
         this.http = http;
         this.firstAidKb = firstAidKb;
         this.apiKey = apiKey == null ? "" : apiKey.trim();
-        this.model = model == null || model.isBlank() ? "gemini-2.0-flash" : model.trim();
+        this.model = model == null || model.isBlank() ? "gemini-flash-lite-latest" : model.trim();
     }
 
     public boolean isConfigured() {
         return !apiKey.isBlank();
     }
 
-    /** Models listed by the key's account, resolved once (Google rotates
-     *  model names - a hardcoded name 404s, as gemini-2.0-flash did). */
+    /** Models listed by the key's account, resolved once. Google RETIRES
+     *  model names aggressively (gemini-2.0-flash then gemini-2.5-flash both
+     *  started returning "no longer available to new users" 404s while still
+     *  appearing in ListModels), so the resolver intersects the account's
+     *  listed models with a hand-verified preference order and a call-time
+     *  404 self-heal advances to the next candidate. */
+    static final List<String> MODEL_PREFERENCE = List.of(
+        "gemini-flash-lite-latest",   // verified live on this key (2.6s audio turn)
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+        "gemini-flash-lite");
+
     private volatile String resolvedModel;
+    private volatile int candidateIndex = 0;
 
     private String resolveModel() {
         String chosen = resolvedModel;
         if (chosen != null) return chosen;
+        List<String> listed = List.of();
         try {
             // API keys go as a query parameter - Google rejects anything else
             // for key auth on this endpoint (no Authorization header support).
@@ -71,32 +83,40 @@ public class GeminiFirstAidService {
                 "GET", url, "application/json", null, new byte[0]);
             if (response.statusCode >= 200 && response.statusCode < 300) {
                 JsonNode models = mapper.readTree(response.body).path("models");
-                List<String> flashes = new java.util.ArrayList<>();
+                List<String> ok = new java.util.ArrayList<>();
                 models.forEach(m -> {
-                    String name = m.path("name").asText("");
-                    boolean generateOk = false;
+                    String name = m.path("name").asText("").replace("models/", "");
                     for (JsonNode method : m.path("supportedGenerationMethods")) {
-                        if ("generateContent".equals(method.asText())) generateOk = true;
+                        if ("generateContent".equals(method.asText())) { ok.add(name); break; }
                     }
-                    if (generateOk && name.contains("flash")) flashes.add(name);
                 });
-                // Preference: newest flash lineage first.
-                chosen = flashes.stream()
-                    .filter(n -> n.contains("gemini-2.5")).findFirst()
-                    .or(() -> flashes.stream().filter(n -> n.contains("gemini-2.0")).findFirst())
-                    .or(() -> flashes.stream().filter(n -> n.contains("gemini-1.5")).findFirst())
-                    .orElse(null);
-                if (chosen != null) {
-                    chosen = chosen.replace("models/", "");
-                    resolvedModel = chosen;
-                    log.info("Gemini model resolved from ListModels: {}", chosen);
-                }
+                listed = ok;
             }
         } catch (Exception e) {
             log.warn("Gemini ListModels probe failed: {}", e.getMessage());
         }
-        if (chosen == null) chosen = model; // fall back to the configured name
+        int idx = Math.min(candidateIndex, MODEL_PREFERENCE.size() - 1);
+        chosen = MODEL_PREFERENCE.get(idx);
+        if (!listed.isEmpty()) {
+            chosen = MODEL_PREFERENCE.stream()
+                .skip(idx)
+                .filter(listed::contains)
+                .findFirst()
+                .orElse(chosen);
+        }
+        resolvedModel = chosen;
+        log.info("Gemini model resolved: {}", chosen);
         return chosen;
+    }
+
+    /** A 404 "no longer available" at call time retires this candidate: drop
+     *  the cache and move the index past it so the next turn self-heals. */
+    private void advancePastRetired(String deadModel) {
+        int at = MODEL_PREFERENCE.indexOf(deadModel);
+        candidateIndex = Math.max(0, Math.min(at + 1, MODEL_PREFERENCE.size() - 1));
+        resolvedModel = null;
+        log.warn("Gemini model {} retired (404) - advancing to candidate {}",
+            deadModel, MODEL_PREFERENCE.get(candidateIndex));
     }
 
     public String model() {
@@ -125,10 +145,19 @@ public class GeminiFirstAidService {
                 "temperature", 0.3,
                 "maxOutputTokens", 180));
 
-            String url = String.format(API_URL, resolveModel()) + "?key=" + apiKey;
-            ProviderHttpClient.ProviderResponse response = http.send(
-                "POST", url, "application/json", null,
-                mapper.writeValueAsBytes(body));
+            String url;
+            ProviderHttpClient.ProviderResponse response = null;
+            for (int attempt = 0; attempt < MODEL_PREFERENCE.size(); attempt++) {
+                url = String.format(API_URL, resolveModel()) + "?key=" + apiKey;
+                response = http.send(
+                    "POST", url, "application/json", null,
+                    mapper.writeValueAsBytes(body));
+                if (response.statusCode == 404 && response.body.contains("no longer available")) {
+                    advancePastRetired(resolveModel());
+                    continue;
+                }
+                break;
+            }
 
             if (response.statusCode == 400 || response.statusCode == 403
                 || response.statusCode == 429) {
@@ -191,12 +220,20 @@ public class GeminiFirstAidService {
                     "inline_data", Map.of("mime_type", "audio/wav", "data", b64))))));
             body.put("generationConfig", Map.of(
                 "temperature", 0.3,
-                "maxOutputTokens", 300));
+                "maxOutputTokens", 700));
 
-            String url = String.format(API_URL, resolveModel()) + "?key=" + apiKey;
-            ProviderHttpClient.ProviderResponse response = http.send(
-                "POST", url, "application/json", null,
-                mapper.writeValueAsBytes(body));
+            ProviderHttpClient.ProviderResponse response = null;
+            for (int attempt = 0; attempt < MODEL_PREFERENCE.size(); attempt++) {
+                String url = String.format(API_URL, resolveModel()) + "?key=" + apiKey;
+                response = http.send(
+                    "POST", url, "application/json", null,
+                    mapper.writeValueAsBytes(body));
+                if (response.statusCode == 404 && response.body.contains("no longer available")) {
+                    advancePastRetired(resolveModel());
+                    continue;
+                }
+                break;
+            }
             if (response.statusCode < 200 || response.statusCode >= 300) {
                 log.warn("Gemini audio turn HTTP {}: {}", response.statusCode,
                     response.body == null ? "" : response.body.substring(0, Math.min(100, response.body.length())));
@@ -206,9 +243,16 @@ public class GeminiFirstAidService {
             String text = root.path("candidates").path(0).path("content")
                 .path("parts").path(0).path("text").asText("").trim();
             if (text.isEmpty()) return null;
-            // Strip markdown fences if the model adds them.
+            // Strip markdown fences if the model adds them, then extract the
+            // balanced JSON object (models occasionally add preamble or the
+            // fence content carries stray text around the object).
             text = text.replace("```json", "").replace("```", "").trim();
-            JsonNode parsed = mapper.readTree(text);
+            JsonNode parsed = parseJsonObject(text);
+            if (parsed == null) {
+                log.warn("Gemini audio turn returned unparseable JSON ({} chars, finish={})",
+                    text.length(), finishReason(mapper, response.body));
+                return null;
+            }
             String transcript = parsed.path("transcript").asText("").trim();
             String reply = parsed.path("reply").asText("").trim();
             if (reply.isEmpty()) return null;
@@ -233,6 +277,43 @@ public class GeminiFirstAidService {
     }
 
     public record AudioTurnResult(String transcript, String reply, boolean urgent) {}
+
+    /** Finds and parses the FIRST balanced {...} object in a model answer. */
+    private JsonNode parseJsonObject(String text) {
+        if (text == null) return null;
+        int start = text.indexOf('{');
+        while (start >= 0) {
+            int depth = 0;
+            boolean inString = false;
+            for (int i = start; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (c == '"' && (i == start || text.charAt(i - 1) != '\\')) inString = !inString;
+                if (inString) continue;
+                if (c == '{') depth++;
+                else if (c == '}') {
+                    depth--;
+                    if (depth == 0) {
+                        try {
+                            return mapper.readTree(text.substring(start, i + 1));
+                        } catch (Exception e) {
+                            break; // try the next '{'
+                        }
+                    }
+                }
+            }
+            start = text.indexOf('{', start + 1);
+        }
+        return null;
+    }
+
+    private String finishReason(ObjectMapper m, String body) {
+        try {
+            return m.readTree(body).path("candidates").path(0)
+                .path("finishReason").asText("?");
+        } catch (Exception e) {
+            return "?";
+        }
+    }
 
     private String buildSystemInstruction(String category,
                                           FirstAidOrchestrator.MedicalContext medical,

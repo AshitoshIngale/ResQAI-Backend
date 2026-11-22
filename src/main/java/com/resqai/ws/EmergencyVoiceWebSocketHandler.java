@@ -319,12 +319,15 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
                     return;
                 }
                 sendJson(ctx.ws, Map.of("type", "transcript", "role", "bystander", "text", transcript));
+                log.info("TURN step: transcript sent");
                 logHistory(session, "BYSTANDER", transcript);
                 conversation.updateFacts(session, transcript);
+                log.info("TURN step: facts updated");
                 boolean redFlag = firstAidService.isRedFlagUtterance(transcript);
                 urgent = urgent || redFlag;
                 sitrepService.recordTimeline(session.getIncidentId(),
                     "BYSTANDER_REPORTED", transcript, redFlag);
+                log.info("TURN step: timeline recorded (urgent={})", urgent);
 
                 if (reply == null || reply.isBlank()) {
                     // Deterministic fallback: reviewed KB guidance - never silence.
@@ -334,13 +337,17 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
                 } else {
                     logHistory(session, "AGENT", reply);
                 }
+                log.info("TURN step: reply ready ({} chars, urgent={})",
+                    reply == null ? -1 : reply.length(), urgent);
 
                 if (urgent) {
                     var urgentReport = sitrepService.generate(session, "URGENT", true);
+                    log.info("TURN step: urgent report generated");
                     sitrepService.relay(urgentReport, sitrepService.ambulanceDestination());
                     session.setUrgentFlagged(true);
                 }
 
+                log.info("TURN step: speaking now");
                 speak(ctx, reply, urgent);
             } catch (Exception e) {
                 log.error("voice turn failed: {}", e.getMessage());
