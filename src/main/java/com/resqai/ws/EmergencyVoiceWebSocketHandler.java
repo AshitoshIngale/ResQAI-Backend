@@ -122,6 +122,16 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
         int speechFrames = 0;
         int quietFrames = 0;
         boolean muted = false;
+        /** Adaptive noise floor: tracks the quietest recent frames so the
+         *  speech threshold works on ANY microphone. Starts conservative. */
+        double noiseFloor = 120.0;
+        double lastSpeechRms = 0;
+    }
+
+    /** Speech threshold for THIS connection: well above its noise floor,
+     *  but never so high that normal speech is missed. */
+    private double speechThreshold(VoiceContext ctx) {
+        return Math.max(180.0, ctx.noiseFloor * 3.0);
     }
 
     @Override
@@ -221,13 +231,21 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
         message.getPayload().get(pcm);
 
         double rms = rms(pcm);
-        boolean isSpeech = rms > SPEECH_RMS;
+        double threshold = speechThreshold(ctx);
+        boolean isSpeech = rms > threshold;
 
         if (!ctx.inUtterance) {
+            // Track the ambient noise floor while quiet (fast down, slow up).
+            if (rms < ctx.noiseFloor) {
+                ctx.noiseFloor = ctx.noiseFloor * 0.7 + rms * 0.3;
+            } else {
+                ctx.noiseFloor = ctx.noiseFloor * 0.995 + rms * 0.005;
+            }
             if (isSpeech) {
                 ctx.inUtterance = true;
                 ctx.speechFrames = 1;
                 ctx.quietFrames = 0;
+                ctx.lastSpeechRms = rms;
                 ctx.pcmBuffer.reset();
                 ctx.pcmBuffer.write(pcm, 0, pcm.length);
                 sendJson(ctx.ws, Map.of("type", "status", "value", "PROCESSING"));
@@ -237,7 +255,8 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
 
         ctx.pcmBuffer.write(pcm, 0, pcm.length);
         ctx.speechFrames++;
-        if (isSpeech) ctx.quietFrames = 0; else ctx.quietFrames++;
+        if (isSpeech) { ctx.quietFrames = 0; ctx.lastSpeechRms = Math.max(ctx.lastSpeechRms, rms); }
+        else ctx.quietFrames++;
 
         boolean longEnough = ctx.speechFrames >= MIN_SPEECH_FRAMES;
         boolean enoughQuiet = ctx.quietFrames >= QUIET_FRAMES_TO_END;
@@ -267,7 +286,12 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
                 var stt = sarvamSpeech.transcribe(wav, langCode);
                 String transcript = stt.transcript();
                 if (transcript == null || transcript.isBlank()) {
-                    // Honest: the utterance could not be transcribed.
+                    // Honest: the utterance could not be transcribed - tell
+                    // the bystander WHY it stayed silent instead of hanging.
+                    sendJson(ctx.ws, Map.of("type", "diag", "message",
+                        "Heard " + String.format("%.1f", ctx.speechFrames * 0.1)
+                            + "s of audio but could not transcribe it - speak a "
+                            + "little louder and closer to the phone."));
                     sendJson(ctx.ws, Map.of("type", "status", "value", "LISTENING"));
                     return;
                 }
