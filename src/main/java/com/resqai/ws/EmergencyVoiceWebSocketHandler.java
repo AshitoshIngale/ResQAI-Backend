@@ -264,15 +264,16 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
         if ((longEnough && enoughQuiet) || tooLong) {
             ctx.inUtterance = false;
             byte[] utterance = ctx.pcmBuffer.toByteArray();
+            double heardSeconds = ctx.speechFrames * 0.1;
             ctx.pcmBuffer.reset();
             ctx.speechFrames = 0;
             ctx.quietFrames = 0;
-            finalizeUtterance(ctx, utterance);
+            finalizeUtterance(ctx, utterance, heardSeconds);
         }
     }
 
     /** STT + brain + TTS run off the WS thread; the socket stays responsive. */
-    private void finalizeUtterance(VoiceContext ctx, byte[] utterancePcm) {
+    private void finalizeUtterance(VoiceContext ctx, byte[] utterancePcm, double heardSeconds) {
         var session = ctx.session;
         sendJson(ctx.ws, Map.of("type", "status", "value", "PROCESSING"));
         Thread.ofVirtual().name("resqai-voice-turn").start(() -> {
@@ -311,7 +312,7 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
                 }
                 if (transcript == null || transcript.isBlank()) {
                     sendJson(ctx.ws, Map.of("type", "diag", "message",
-                        "Heard " + String.format("%.1f", ctx.speechFrames * 0.1)
+                        "Heard " + String.format("%.1f", heardSeconds)
                             + "s of audio but could not transcribe it - speak a "
                             + "little louder and closer to the phone."));
                     sendJson(ctx.ws, Map.of("type", "status", "value", "LISTENING"));

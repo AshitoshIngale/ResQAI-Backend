@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -32,7 +33,7 @@ public class GeminiTtsService {
     private final String voiceName;
 
     public GeminiTtsService(
-            ProviderHttpClient http,
+            @Qualifier("geminiHttp") ProviderHttpClient http,
             @Value("${resqai.gemini.api-key:}") String apiKey,
             @Value("${resqai.gemini.tts-model:gemini-2.5-flash-preview-tts}") String model,
             @Value("${resqai.gemini.tts-voice:Kore}") String voiceName) {

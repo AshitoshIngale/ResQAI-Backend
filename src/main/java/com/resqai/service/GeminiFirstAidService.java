@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.resqai.model.EmergencyVoiceSessionDocument;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -41,7 +42,7 @@ public class GeminiFirstAidService {
     private final String model;
 
     public GeminiFirstAidService(
-            ProviderHttpClient http,
+            @Qualifier("geminiHttp") ProviderHttpClient http,
             EmergencyFirstAidService firstAidKb,
             @Value("${resqai.gemini.api-key:}") String apiKey,
             @Value("${resqai.gemini.model:gemini-2.0-flash}") String model) {
@@ -63,7 +64,9 @@ public class GeminiFirstAidService {
         String chosen = resolvedModel;
         if (chosen != null) return chosen;
         try {
-            String url = "https://generativelanguage.googleapis.com/v1beta/models";
+            // API keys go as a query parameter - Google rejects anything else
+            // for key auth on this endpoint (no Authorization header support).
+            String url = "https://generativelanguage.googleapis.com/v1beta/models?key=" + apiKey;
             ProviderHttpClient.ProviderResponse response = http.send(
                 "GET", url, "application/json", null, new byte[0]);
             if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -122,9 +125,9 @@ public class GeminiFirstAidService {
                 "temperature", 0.3,
                 "maxOutputTokens", 180));
 
-            String url = String.format(API_URL, resolveModel());
+            String url = String.format(API_URL, resolveModel()) + "?key=" + apiKey;
             ProviderHttpClient.ProviderResponse response = http.send(
-                "POST", url, "application/json", "api-subscription-key " + apiKey,
+                "POST", url, "application/json", null,
                 mapper.writeValueAsBytes(body));
 
             if (response.statusCode == 400 || response.statusCode == 403
@@ -190,9 +193,9 @@ public class GeminiFirstAidService {
                 "temperature", 0.3,
                 "maxOutputTokens", 300));
 
-            String url = String.format(API_URL, resolveModel());
+            String url = String.format(API_URL, resolveModel()) + "?key=" + apiKey;
             ProviderHttpClient.ProviderResponse response = http.send(
-                "POST", url, "application/json", "api-subscription-key " + apiKey,
+                "POST", url, "application/json", null,
                 mapper.writeValueAsBytes(body));
             if (response.statusCode < 200 || response.statusCode >= 300) {
                 log.warn("Gemini audio turn HTTP {}: {}", response.statusCode,
