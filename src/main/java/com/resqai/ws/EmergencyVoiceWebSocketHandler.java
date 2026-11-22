@@ -12,8 +12,6 @@ import com.resqai.service.EmergencySituationReportService;
 import com.resqai.service.FirstAidOrchestrator;
 import com.resqai.service.GeminiFirstAidService;
 import com.resqai.service.GeminiTtsService;
-import com.resqai.service.SarvamSpeechService;
-import com.resqai.service.SarvamStreamingTtsService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -34,11 +32,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * The real-time voice bridge for the browser/native AI first-aid conversation
  * (spec PART 7, architecture Option B - native variant): the bystander speaks
  * in the app; PCM16 16 kHz mono audio streams over this WebSocket; the server
- * buffers utterances with silence detection, transcribes each utterance with
- * Sarvam REST STT (verified word-perfect), and the CONVERSATION BRAIN replies:
- * Gemini (user's own API, KB-restricted, safety post-validated) with a
- * deterministic fallback when Gemini is unavailable or violates safety.
- * The reply is spoken by Sarvam streaming TTS and streamed back as audio.
+ * buffers utterances with silence detection and sends each utterance STRAIGHT
+ * to the user's Gemini API (transcribes AND writes the first-aid response in
+ * one call - Sarvam was removed entirely per user decision). The reply is
+ * spoken by Gemini TTS with natural style direction; if Google is unreachable
+ * the text goes to the app's offline TTS so the reply is NEVER lost.
  *
  * Twilio is NOT part of this conversation - it remains only for the
  * ambulance telephone integration (spec architecture decision, Option B).
@@ -49,7 +47,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *   client -> {"type":"end"}
  *   server -> {"type":"status","value":"LISTENING|PROCESSING|SPEAKING|RECONNECTING"}
  *   server -> {"type":"transcript","role":"bystander","text":...}
- *   server -> {"type":"ai","text":...,"audio":"<base64 mp3>","urgent":bool}
+ *   server -> {"type":"ai_audio","audio":"<base64 wav>","contentType":"audio/wav"}
+ *   server -> {"type":"ai_text","text":...}   (offline TTS fallback)
  *   server -> {"type":"session","patientName":...,"emergencyId":...}
  *   server -> {"type":"error","message":...}
  */
@@ -71,8 +70,6 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
 
     private final EmergencyVoiceSessionRepository sessionRepository;
     private final VoiceConversationHistoryRepository historyRepository;
-    private final SarvamSpeechService sarvamSpeech;
-    private final SarvamStreamingTtsService ttsService;
     private final EmergencyConversationService conversation;
     private final GeminiFirstAidService gemini;
     private final GeminiTtsService geminiTts;
@@ -89,8 +86,6 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
     public EmergencyVoiceWebSocketHandler(
             EmergencyVoiceSessionRepository sessionRepository,
             VoiceConversationHistoryRepository historyRepository,
-            SarvamSpeechService sarvamSpeech,
-            SarvamStreamingTtsService ttsService,
             EmergencyConversationService conversation,
             GeminiFirstAidService gemini,
             GeminiTtsService geminiTts,
@@ -102,8 +97,6 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
         this.firstAidService = firstAidService;
         this.sessionRepository = sessionRepository;
         this.historyRepository = historyRepository;
-        this.sarvamSpeech = sarvamSpeech;
-        this.ttsService = ttsService;
         this.conversation = conversation;
         this.gemini = gemini;
         this.geminiTts = geminiTts;
@@ -116,7 +109,6 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
     private static class VoiceContext {
         WebSocketSession ws;
         EmergencyVoiceSessionDocument session;
-        SarvamStreamingTtsService.Stream tts;
         ByteArrayOutputStream pcmBuffer = new ByteArrayOutputStream();
         boolean inUtterance = false;
         int speechFrames = 0;
@@ -197,10 +189,13 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
 
         VoiceContext ctx = new VoiceContext();
         // All sends (status, transcripts, AI audio) happen from MULTIPLE
-        // threads (STT callbacks, agent turn, TTS stream). Raw sessions are
+        // threads (agent turn, TTS synthesis). Raw sessions are
         // single-threaded - concurrent sends kill the connection. The
-        // decorator serializes them with an overflow buffer.
-        ctx.ws = new ConcurrentWebSocketSessionDecorator(ws, 8000, 512 * 1024);
+        // decorator serializes them. Gemini TTS delivers ONE complete WAV
+        // per reply (a 15 s answer is ~1 MB base64), so the overflow buffer
+        // must hold a full spoken reply - 512 KB closed the socket mid-reply
+        // with 1006.
+        ctx.ws = new ConcurrentWebSocketSessionDecorator(ws, 60000, 4 * 1024 * 1024);
         ctx.session = session;
         session.setLanguage(language);
         session.setConsentAt(Instant.now());
@@ -217,7 +212,9 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
             "patientName", session.getVictimName() == null ? "" : session.getVictimName(),
             "emergencyId", session.getVictimEmergencyId() == null ? "" : session.getVictimEmergencyId(),
             "language", language));
-        speak(ctx, intro, false);
+        // Gemini TTS synthesis takes seconds; the WS container thread must
+        // return immediately or the client's first binary frames queue up.
+        Thread.ofVirtual().name("resqai-voice-intro").start(() -> speak(ctx, intro, false));
         sendJson(ws, Map.of("type", "status", "value", "LISTENING"));
         log.info("voice session started: {}", session.getSessionId());
     }
@@ -278,11 +275,6 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
         sendJson(ctx.ws, Map.of("type", "status", "value", "PROCESSING"));
         Thread.ofVirtual().name("resqai-voice-turn").start(() -> {
             try {
-                String langCode = switch (session.getLanguage() == null ? "en" : session.getLanguage()) {
-                    case "hi" -> "hi-IN";
-                    case "mr" -> "mr-IN";
-                    default -> "en-IN";
-                };
                 byte[] wav = AudioWavUtil.pcm16ToWav(utterancePcm, SAMPLE_RATE, 1);
                 var reportOpt = reports.findByReportId(session.getIncidentId());
                 String category = reportOpt.map(r -> r.getCategory()).orElse("OTHER");
@@ -292,9 +284,9 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
                 String reply = null;
                 boolean urgent = false;
 
-                // PRIMARY BRAIN: one Gemini audio turn - the bystander's
-                // voice goes STRAIGHT to Gemini (it transcribes and writes
-                // the first-aid response in a single call, English enforced).
+                // ONE BRAIN (Sarvam removed per user decision): the
+                // bystander's voice goes STRAIGHT to Gemini - it transcribes
+                // and writes the first-aid response in a single call.
                 if (gemini.isConfigured()) {
                     var turn = gemini.audioTurn(session, category, medical, wav);
                     if (turn != null) {
@@ -304,16 +296,10 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
                     }
                 }
 
-                // FALLBACK CHAIN (works at any cost):
-                if (transcript == null || transcript.isBlank()) {
-                    // Sarvam REST STT (verified) -> deterministic KB guidance.
-                    var stt = sarvamSpeech.transcribe(wav, langCode);
-                    transcript = stt.transcript();
-                }
                 if (transcript == null || transcript.isBlank()) {
                     sendJson(ctx.ws, Map.of("type", "diag", "message",
                         "Heard " + String.format("%.1f", heardSeconds)
-                            + "s of audio but could not transcribe it - speak a "
+                            + "s of audio but could not understand it - speak a "
                             + "little louder and closer to the phone."));
                     sendJson(ctx.ws, Map.of("type", "status", "value", "LISTENING"));
                     return;
@@ -358,56 +344,44 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
         });
     }
 
+    /**
+     * Speaks the reply with Gemini TTS (natural style direction + language
+     * config inside the service). Runs on the turn thread - a Google
+     * synthesis takes a few seconds, and the socket (concurrent decorator)
+     * stays responsive for new audio meanwhile. If Google fails (rate limit,
+     * outage) the TEXT goes to the app's offline TTS instead - the bystander
+     * ALWAYS gets the reply, voice or text.
+     */
     private void speak(VoiceContext ctx, String text, boolean urgent) {
         sendJson(ctx.ws, Map.of("type", "status", "value", "SPEAKING"));
-        if (ctx.tts != null) { try { ctx.tts.close(); } catch (Exception ignore) {} }
-        final String replyText = text;
-        ctx.tts = ttsService.open(ctx.session.getLanguage(),
-            new SarvamStreamingTtsService.Listener() {
-                @Override public void onAudioChunk(String base64Audio, String contentType) {
-                    sendJson(ctx.ws, Map.of(
-                        "type", "ai_audio",
-                        "audio", base64Audio,
-                        "contentType", contentType,
-                        "ttsProvider", "sarvam",
-                        "urgent", urgent));
-                }
-                @Override public void onUtteranceComplete() {
-                    sendJson(ctx.ws, Map.of("type", "status", "value", "LISTENING"));
-                }
-                @Override public void onError(String message) {
-                    // Sarvam voice failed (credits/unavailable): fall back to
-                    // Gemini TTS, then to the app's own offline TTS - the
-                    // reply text is ALWAYS delivered one way or another.
-                    deliverFallbackVoice(ctx, replyText);
-                }
-            });
-        ctx.tts.speak(text);
-    }
-
-    /** Provider chain: Sarvam stream failed -> Gemini TTS one-shot ->
-     *  app-local TTS (ai_text). The reply text is always delivered. */
-    private void deliverFallbackVoice(VoiceContext ctx, String replyText) {
         var session = ctx.session;
         String lang = session.getLanguage() == null ? "en" : session.getLanguage();
-        if (geminiTts.isConfigured()) {
-            var result = geminiTts.synthesize(replyText, lang);
-            if (result != null && result.wav() != null && result.wav().length > 44) {
-                String audio = java.util.Base64.getEncoder().encodeToString(result.wav());
+        try {
+            byte[] wav = geminiTts.isConfigured()
+                ? geminiTts.synthesizeReply(text, lang) : null;
+            if (wav != null && wav.length > 44) {
+                String audio = java.util.Base64.getEncoder().encodeToString(wav);
                 sendJson(ctx.ws, Map.of(
                     "type", "ai_audio",
                     "audio", audio,
                     "contentType", "audio/wav",
-                    "ttsProvider", "gemini"));
-                sendJson(ctx.ws, Map.of("type", "status", "value", "LISTENING"));
-                return;
+                    "ttsProvider", "gemini",
+                    "urgent", urgent));
+            } else {
+                sendJson(ctx.ws, Map.of(
+                    "type", "ai_text",
+                    "text", text,
+                    "ttsProvider", "app_local",
+                    "urgent", urgent));
             }
+        } catch (Exception e) {
+            log.warn("speech delivery failed: {}", e.getMessage());
+            sendJson(ctx.ws, Map.of(
+                "type", "ai_text",
+                "text", text,
+                "ttsProvider", "app_local",
+                "urgent", urgent));
         }
-        // Final fallback: the app speaks the reply with Android's offline TTS.
-        sendJson(ctx.ws, Map.of(
-            "type", "ai_text",
-            "text", replyText,
-            "ttsProvider", "app_local"));
         sendJson(ctx.ws, Map.of("type", "status", "value", "LISTENING"));
     }
 
@@ -439,7 +413,6 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
     public void afterConnectionClosed(WebSocketSession ws, CloseStatus status) {
         VoiceContext ctx = contexts.remove(ws.getId());
         if (ctx == null) return;
-        if (ctx.tts != null) try { ctx.tts.close(); } catch (Exception ignore) {}
         var session = ctx.session;
         if (session != null && "ACTIVE".equals(session.getState())) {
             // Honest DISCONNECTED state: incident persists; the bystander may
@@ -458,7 +431,6 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
         session.setEndedAt(Instant.now());
         sessionRepository.save(session);
         logHistory(session, "SYSTEM", "Session ended by bystander (" + reason + ")");
-        if (ctx.tts != null) try { ctx.tts.close(); } catch (Exception ignore) {}
     }
 
     private void sendJson(WebSocketSession ws, Map<?, ?> payload) {

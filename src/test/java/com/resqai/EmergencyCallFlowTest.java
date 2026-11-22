@@ -12,7 +12,7 @@ import com.resqai.repository.MedicalAccessAuditRepository;
 import com.resqai.repository.UserRepository;
 import com.resqai.service.EmergencyCallScriptService;
 import com.resqai.service.ProviderHttpClient;
-import com.resqai.service.SarvamTtsService;
+import com.resqai.service.GeminiTtsService;
 import com.resqai.service.StateLanguageResolver;
 import com.resqai.service.TwilioVoiceService;
 import com.resqai.service.BystanderReportService;
@@ -37,7 +37,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Emergency-call flow: state->language resolution, script honesty, Sarvam
+ * Emergency-call flow: state->language resolution, script honesty, Gemini
  * TTS wire behavior, Twilio Voice statuses, webhook signature validation,
  * call idempotency, and the minimum-necessary medical summary.
  */
@@ -120,48 +120,82 @@ class EmergencyCallFlowTest {
         assertFalse(en.contains("O+"));
     }
 
-    // ---------------- Sarvam TTS ----------------
+    // ---------------- Gemini TTS ----------------
 
     private static ProviderHttpClient ttsTransport(int status, String body) {
         return (m, u, c, a, b) -> new ProviderHttpClient.ProviderResponse(status, body);
     }
 
-    @Test
-    void sarvamTtsSynthesizesAndCachesPerTextAndLanguage() {
-        String b64 = Base64.getEncoder().encodeToString(new byte[]{1, 2, 3, 4});
-        String[] authHeader = {null};
-        String[] body = {null};
-        ProviderHttpClient capture = (m, u, c, a, b) -> {
-            authHeader[0] = a;
-            body[0] = new String(b, java.nio.charset.StandardCharsets.UTF_8);
-            return new ProviderHttpClient.ProviderResponse(
-                200, "{\"audios\":[\"" + b64 + "\"]}");
-        };
-        SarvamTtsService tts = new SarvamTtsService(capture, "key");
-        var first = tts.synthesize("Emergency near the gate.", "mr-IN");
-        assertEquals(SarvamTtsService.Status.SYNTHESIZED, first.status());
-        assertArrayEquals(new byte[]{1, 2, 3, 4}, first.audioWav());
-        assertEquals("Bearer key", authHeader[0]);
-        assertTrue(body[0].contains("\"target_language_code\":\"mr-IN\""));
-        // Male voice (user preference), slower pace, high sample rate.
-        assertTrue(body[0].contains("\"speaker\":\"anand\""));
-        assertTrue(body[0].contains("\"pace\":0.85"));
-        assertTrue(body[0].contains("\"speech_sample_rate\":44100"));
-        // Second call is served from cache — no second provider request.
-        var second = tts.synthesize("Emergency near the gate.", "mr-IN");
-        assertEquals("cache", second.detail());
-        assertNotNull(tts.cachedAudio(
-            SarvamTtsService.cacheKey("Emergency near the gate.", "mr-IN")));
+    /** Gemini TTS wire shape: inlineData with L16 PCM (2.5-preview style). */
+    private static String geminiTtsOk(byte[] pcm) {
+        String b64 = Base64.getEncoder().encodeToString(pcm);
+        return "{\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":"
+            + "{\"mimeType\":\"audio/L16;codec=pcm;rate=24000\",\"data\":\"" + b64 + "\"}}]}}]}";
     }
 
     @Test
-    void sarvamTtsIsHonestAboutFailures() {
-        assertEquals(SarvamTtsService.Status.INVALID_CREDENTIALS,
-            new SarvamTtsService(ttsTransport(401, ""), "bad").synthesize("x", "en-IN").status());
-        assertEquals(SarvamTtsService.Status.FAILED,
-            new SarvamTtsService(ttsTransport(500, "boom"), "k").synthesize("x", "en-IN").status());
-        assertEquals(SarvamTtsService.Status.NOT_CONFIGURED,
-            new SarvamTtsService(ttsTransport(200, "{}"), "").synthesize("x", "en-IN").status());
+    void geminiTtsSynthesizesAndCachesPerTextAndLanguage() {
+        String[] url = {null};
+        String[] authHeader = {null};
+        String[] body = {null};
+        ProviderHttpClient capture = (m, u, c, a, b) -> {
+            url[0] = u;
+            authHeader[0] = a;
+            body[0] = new String(b, java.nio.charset.StandardCharsets.UTF_8);
+            return new ProviderHttpClient.ProviderResponse(
+                200, geminiTtsOk(new byte[]{8, 7, 6, 5}));
+        };
+        GeminiTtsService tts = new GeminiTtsService(capture, "key", "", "Charon");
+        var first = tts.synthesize("Emergency near the gate.", "mr-IN");
+        assertEquals(GeminiTtsService.Status.SYNTHESIZED, first.status());
+        // Raw L16 PCM is wrapped into a complete WAV, then normalized to
+        // 16 kHz: 2 samples at 24 kHz resample to 1 sample (44 + 2 bytes).
+        assertEquals(44 + 2, first.audioWav().length);
+        assertEquals('R', (char) first.audioWav()[0]);
+        // API key travels as ?key= (API keys reject Authorization headers).
+        assertNull(authHeader[0]);
+        assertTrue(url[0].contains("key=key"));
+        assertTrue(url[0].contains("gemini-3.8-flash-tts"));
+        // Male voice, native language config, PLAIN text (the 3.8 read-aloud
+        // models narrate style prefixes aloud - verified by transcription).
+        assertTrue(body[0].contains("\"voiceName\":\"Charon\""));
+        assertTrue(body[0].contains("\"languageCode\":\"mr-IN\""));
+        assertFalse(body[0].contains("emergency responder"));
+        assertTrue(body[0].contains("Emergency near the gate."));
+        // Second call is served from cache - no second provider request.
+        var second = tts.synthesize("Emergency near the gate.", "mr-IN");
+        assertEquals("cached", second.detail());
+        assertNotNull(tts.cachedAudio(
+            GeminiTtsService.cacheKey("Emergency near the gate.", "mr-IN")));
+    }
+
+    @Test
+    void geminiTtsIsHonestAboutFailures() {
+        assertEquals(GeminiTtsService.Status.FAILED,
+            new GeminiTtsService(ttsTransport(500, "boom"), "k", "", "Charon")
+                .synthesize("x", "en-IN").status());
+        assertEquals(GeminiTtsService.Status.NOT_CONFIGURED,
+            new GeminiTtsService(ttsTransport(200, "{}"), "", "", "Charon")
+                .synthesize("x", "en-IN").status());
+        // A retired-model 404 advances the preference for the NEXT call.
+        java.util.List<String> urls = new java.util.ArrayList<>();
+        ProviderHttpClient transport = (m, u, c, a, b) -> {
+            urls.add(u);
+            if (urls.size() == 1) {
+                return new ProviderHttpClient.ProviderResponse(404,
+                    "{\"error\":{\"message\":\"This model models/gemini-3.8-flash-tts "
+                        + "is no longer available to new users.\"}}");
+            }
+            return new ProviderHttpClient.ProviderResponse(200, geminiTtsOk(new byte[]{1}));
+        };
+        GeminiTtsService tts = new GeminiTtsService(transport, "k", "", "Charon");
+        // A retired 404 advances transparently within the SAME request -
+        // the bystander never notices the model change.
+        assertEquals(GeminiTtsService.Status.SYNTHESIZED,
+            tts.synthesize("x", "en-IN").status());
+        assertEquals(2, urls.size());
+        assertTrue(urls.get(0).contains("gemini-3.8-flash-tts"));
+        assertTrue(urls.get(1).contains("gemini-3.8-flash-lite-tts"));
     }
 
     // ---------------- Twilio Voice ----------------
@@ -275,11 +309,11 @@ class EmergencyCallFlowTest {
         when(reports.findByReportId("r-1")).thenReturn(Optional.of(verifiedReport()));
 
         ProviderHttpClient ttsOk = (m, u, c, a, b) -> new ProviderHttpClient.ProviderResponse(
-            200, "{\"audios\":[\"" + Base64.getEncoder().encodeToString(new byte[]{9}) + "\"]}");
+            200, geminiTtsOk(new byte[]{9}));
         TwilioWebhookController controller = new TwilioWebhookController(
             reports, users, profiles,
             new TwilioVoiceService(ttsOk, "AC1", "token", "+1555"),
-            new SarvamTtsService(ttsOk, "key"),
+            new GeminiTtsService(ttsOk, "key", "", "Charon"),
             scripts,
             mock(com.resqai.repository.EmergencySmsIncidentRepository.class),
             new com.resqai.service.FirstAidOrchestrator(),
@@ -306,12 +340,12 @@ class EmergencyCallFlowTest {
 
         // After the background warm completes, the SAME request serves
         // synthesized audio for every language segment.
-        SarvamTtsService realTts = new SarvamTtsService(ttsOk, "key");
+        GeminiTtsService realTts = new GeminiTtsService(ttsOk, "key", "", "Charon");
         for (EmergencyCallScriptService.Segment segment :
                 scripts.buildScript("ROAD_ACCIDENT", null, 18.5204, 73.8567, "Asha Patil",
                     "O+", List.of("penicillin"), null,
                     StateLanguageResolver.resolve(18.5204, 73.8567))) {
-            assertEquals(SarvamTtsService.Status.SYNTHESIZED,
+            assertEquals(GeminiTtsService.Status.SYNTHESIZED,
                 realTts.synthesize(segment.text(), segment.languageCode()).status());
         }
         TwilioWebhookController warmController = new TwilioWebhookController(
@@ -344,7 +378,7 @@ class EmergencyCallFlowTest {
         TwilioWebhookController controller = new TwilioWebhookController(
             reports, users, profiles,
             new TwilioVoiceService(failing, "AC1", "token", "+1555"),
-            new SarvamTtsService(failing, "key"),
+            new GeminiTtsService(failing, "key", "", "Charon"),
             scripts,
             mock(com.resqai.repository.EmergencySmsIncidentRepository.class),
             new com.resqai.service.FirstAidOrchestrator(),
@@ -376,7 +410,7 @@ class EmergencyCallFlowTest {
             mock(TwilioVoiceService.class),
             mock(MedicalAccessAuditRepository.class),
             mock(EmergencyCallScriptService.class),
-            mock(SarvamTtsService.class),
+            mock(GeminiTtsService.class),
             mock(com.resqai.service.ReverseGeocodeService.class));
         // Inject config values (field injection via reflection as Spring would).
         org.springframework.test.util.ReflectionTestUtils.setField(
@@ -412,7 +446,7 @@ class EmergencyCallFlowTest {
             mock(TwilioVoiceService.class),
             mock(MedicalAccessAuditRepository.class),
             mock(EmergencyCallScriptService.class),
-            mock(SarvamTtsService.class),
+            mock(GeminiTtsService.class),
             mock(com.resqai.service.ReverseGeocodeService.class));
         org.springframework.test.util.ReflectionTestUtils.setField(
             service, "emergencyCallDestination", "not-a-number");
@@ -448,7 +482,7 @@ class EmergencyCallFlowTest {
             reports, users, mock(com.resqai.repository.IncidentRepository.class),
             profiles, mock(com.resqai.repository.EmergencyContactRepository.class),
             mock(com.resqai.service.TwilioAlertService.class), mock(TwilioVoiceService.class),
-            audit, mock(EmergencyCallScriptService.class), mock(SarvamTtsService.class),
+            audit, mock(EmergencyCallScriptService.class), mock(GeminiTtsService.class),
             mock(com.resqai.service.ReverseGeocodeService.class));
 
         BystanderDtos.VictimSummary summary =

@@ -52,7 +52,7 @@ public class BystanderReportService {
     private final TwilioVoiceService voice;
     private final MedicalAccessAuditRepository audit;
     private final EmergencyCallScriptService scriptService;
-    private final SarvamTtsService ttsService;
+    private final GeminiTtsService ttsService;
     private final ReverseGeocodeService geocoder;
 
     /** Destination for the automated emergency call (server-managed, env-only). */
@@ -72,7 +72,7 @@ public class BystanderReportService {
                                   TwilioVoiceService voice,
                                   MedicalAccessAuditRepository audit,
                                   EmergencyCallScriptService scriptService,
-                                  SarvamTtsService ttsService,
+                                  GeminiTtsService ttsService,
                                   ReverseGeocodeService geocoder) {
         this.reports = reports;
         this.users = users;

@@ -27,22 +27,23 @@ public class BystanderController {
 
     private final BystanderReportService reportService;
     private final RateLimiter rateLimiter;
-    private final com.resqai.service.SarvamSpeechService sarvamSpeech;
+    private final com.resqai.service.GeminiSttService geminiStt;
     private final com.resqai.repository.BystanderReportRepository reportRepository;
 
     public BystanderController(BystanderReportService reportService, RateLimiter rateLimiter,
-                               com.resqai.service.SarvamSpeechService sarvamSpeech,
+                               com.resqai.service.GeminiSttService geminiStt,
                                com.resqai.repository.BystanderReportRepository reportRepository) {
         this.reportService = reportService;
         this.rateLimiter = rateLimiter;
-        this.sarvamSpeech = sarvamSpeech;
+        this.geminiStt = geminiStt;
         this.reportRepository = reportRepository;
     }
 
     /**
-     * Transcribes a bystander voice note through Sarvam and stores ONLY the
-     * transcript text (limited information) against the report. The audio
-     * itself is never persisted. Honest statuses for every failure mode.
+     * Transcribes a bystander voice note with the user's Gemini API (Sarvam
+     * removed entirely per user decision) and stores ONLY the transcript
+     * text (limited information) against the report. The audio itself is
+     * never persisted. Honest statuses for every failure mode.
      */
     @PostMapping("/bystander/reports/{reportId}/voice-note")
     public ResponseEntity<java.util.Map<String, Object>> voiceNote(
@@ -63,10 +64,11 @@ public class BystanderController {
             out.put("detail", "audioBase64 is not valid Base64.");
             return ResponseEntity.badRequest().body(out);
         }
-        var result = sarvamSpeech.transcribe(audio, request == null ? null : request.languageCode);
-        out.put("status", result.status().name());
+        var result = geminiStt.transcribe(audio, request == null ? null : request.languageCode);
+        boolean transcribed = result.transcript() != null && !result.transcript().isBlank();
+        out.put("status", transcribed ? "TRANSCRIBED" : "FAILED");
         out.put("detail", result.detail());
-        if (result.transcript() != null) {
+        if (transcribed) {
             out.put("transcript", result.transcript());
             var report = reportRepository.findByReportId(reportId);
             report.ifPresent(r -> {

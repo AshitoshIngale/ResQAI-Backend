@@ -6,7 +6,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 
-/** Outbound provider HTTP clients (Twilio / Sarvam / Gemini). Swappable in tests. */
+/** Outbound provider HTTP clients (Twilio / Gemini). Swappable in tests. */
 @Configuration
 public class ProviderConfig {
 

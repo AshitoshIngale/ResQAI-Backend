@@ -199,81 +199,91 @@ public class GeminiFirstAidService {
                                      byte[] wavBytes) {
         if (!isConfigured() || wavBytes == null || wavBytes.length < 1000) return null;
         String language = session.getLanguage() == null ? "en" : session.getLanguage();
-        try {
-            String systemInstruction = buildSystemInstruction(category, medical, language);
-            String b64 = Base64.getEncoder().encodeToString(wavBytes);
+        String systemInstruction = buildSystemInstruction(category, medical, language);
+        // Attempt 1 uses the plain JSON instruction; attempt 2 reinforces it -
+        // the model occasionally answers in prose despite the contract.
+        for (int jsonAttempt = 0; jsonAttempt < 2; jsonAttempt++) {
+            try {
+                String jsonRule = jsonAttempt == 0
+                    ? "Reply with ONLY a JSON object: "
+                    : "CRITICAL: your previous answer was not valid JSON. "
+                      + "Respond with ONLY raw JSON, nothing before or after it: ";
+                String b64 = Base64.getEncoder().encodeToString(wavBytes);
 
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("system_instruction", Map.of(
-                "parts", List.of(Map.of("text",
-                    systemInstruction + "\n\nFirst TRANSCRIBE the bystander's speech verbatim, "
-                    + "then respond as the emergency assistant. Reply with ONLY a JSON object: "
-                    + "{\"transcript\": \"<verbatim English transcript>\", "
-                    + "\"reply\": \"<your spoken response in English, max 60 words\", "
-                    + "\"conscious\": \"yes|no|unknown\", "
-                    + "\"breathing\": \"yes|no|unknown\", "
-                    + "\"bleeding\": \"yes|no|unknown\", "
-                    + "\"urgent\": true|false}"))));
-            body.put("contents", List.of(Map.of(
-                "role", "user",
-                "parts", List.of(Map.of(
-                    "inline_data", Map.of("mime_type", "audio/wav", "data", b64))))));
-            body.put("generationConfig", Map.of(
-                "temperature", 0.3,
-                "maxOutputTokens", 700));
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("system_instruction", Map.of(
+                    "parts", List.of(Map.of("text",
+                        systemInstruction + "\n\nFirst TRANSCRIBE the bystander's speech verbatim, "
+                        + "then respond as the emergency assistant. " + jsonRule
+                        + "{\"transcript\": \"<verbatim English transcript>\", "
+                        + "\"reply\": \"<your spoken response in English, max 60 words\", "
+                        + "\"conscious\": \"yes|no|unknown\", "
+                        + "\"breathing\": \"yes|no|unknown\", "
+                        + "\"bleeding\": \"yes|no|unknown\", "
+                        + "\"urgent\": true|false}"))));
+                body.put("contents", List.of(Map.of(
+                    "role", "user",
+                    "parts", List.of(Map.of(
+                        "inline_data", Map.of("mime_type", "audio/wav", "data", b64))))));
+                body.put("generationConfig", Map.of(
+                    "temperature", jsonAttempt == 0 ? 0.3 : 0.0,
+                    "maxOutputTokens", 700));
 
-            ProviderHttpClient.ProviderResponse response = null;
-            for (int attempt = 0; attempt < MODEL_PREFERENCE.size(); attempt++) {
-                String url = String.format(API_URL, resolveModel()) + "?key=" + apiKey;
-                response = http.send(
-                    "POST", url, "application/json", null,
-                    mapper.writeValueAsBytes(body));
-                if (response.statusCode == 404 && response.body.contains("no longer available")) {
-                    advancePastRetired(resolveModel());
-                    continue;
+                ProviderHttpClient.ProviderResponse response = null;
+                for (int attempt = 0; attempt < MODEL_PREFERENCE.size(); attempt++) {
+                    String url = String.format(API_URL, resolveModel()) + "?key=" + apiKey;
+                    response = http.send(
+                        "POST", url, "application/json", null,
+                        mapper.writeValueAsBytes(body));
+                    if (response.statusCode == 404 && response.body.contains("no longer available")) {
+                        advancePastRetired(resolveModel());
+                        continue;
+                    }
+                    break;
                 }
-                break;
-            }
-            if (response.statusCode < 200 || response.statusCode >= 300) {
-                log.warn("Gemini audio turn HTTP {}: {}", response.statusCode,
-                    response.body == null ? "" : response.body.substring(0, Math.min(100, response.body.length())));
+                if (response.statusCode < 200 || response.statusCode >= 300) {
+                    log.warn("Gemini audio turn HTTP {}: {}", response.statusCode,
+                        response.body == null ? "" : response.body.substring(0, Math.min(100, response.body.length())));
+                    return null;
+                }
+                JsonNode root = mapper.readTree(response.body);
+                String text = root.path("candidates").path(0).path("content")
+                    .path("parts").path(0).path("text").asText("").trim();
+                if (text.isEmpty()) return null;
+                // Strip markdown fences if the model adds them, then extract the
+                // balanced JSON object (models occasionally add preamble or the
+                // fence content carries stray text around the object).
+                text = text.replace("```json", "").replace("```", "").trim();
+                JsonNode parsed = parseJsonObject(text);
+                if (parsed == null) {
+                    log.warn("Gemini audio turn answer not JSON (attempt {}, {} chars, finish={}): {}",
+                        jsonAttempt + 1, text.length(), finishReason(mapper, response.body),
+                        text.substring(0, Math.min(160, text.length())));
+                    continue; // retry with the reinforced instruction
+                }
+                String transcript = parsed.path("transcript").asText("").trim();
+                String reply = parsed.path("reply").asText("").trim();
+                if (reply.isEmpty()) return null;
+                // Safety post-validation on the reply.
+                if (firstAidKb.violatesSafety(reply)) {
+                    log.warn("Gemini audio-turn reply violated safety patterns - discarded");
+                    return null;
+                }
+                // Merge reported facts into the session.
+                Map<String, String> facts = session.getCollectedFacts();
+                for (String key : List.of("conscious", "breathing", "bleeding")) {
+                    String v = parsed.path(key).asText("unknown");
+                    if (!"unknown".equals(v)) facts.put(key, v);
+                }
+                boolean urgent = parsed.path("urgent").asBoolean(false)
+                    || firstAidKb.isRedFlagUtterance(transcript);
+                return new AudioTurnResult(transcript, reply, urgent);
+            } catch (Exception e) {
+                log.warn("Gemini audio turn failed: {}", e.getMessage());
                 return null;
             }
-            JsonNode root = mapper.readTree(response.body);
-            String text = root.path("candidates").path(0).path("content")
-                .path("parts").path(0).path("text").asText("").trim();
-            if (text.isEmpty()) return null;
-            // Strip markdown fences if the model adds them, then extract the
-            // balanced JSON object (models occasionally add preamble or the
-            // fence content carries stray text around the object).
-            text = text.replace("```json", "").replace("```", "").trim();
-            JsonNode parsed = parseJsonObject(text);
-            if (parsed == null) {
-                log.warn("Gemini audio turn returned unparseable JSON ({} chars, finish={})",
-                    text.length(), finishReason(mapper, response.body));
-                return null;
-            }
-            String transcript = parsed.path("transcript").asText("").trim();
-            String reply = parsed.path("reply").asText("").trim();
-            if (reply.isEmpty()) return null;
-            // Safety post-validation on the reply.
-            if (firstAidKb.violatesSafety(reply)) {
-                log.warn("Gemini audio-turn reply violated safety patterns - discarded");
-                return null;
-            }
-            // Merge reported facts into the session.
-            Map<String, String> facts = session.getCollectedFacts();
-            for (String key : List.of("conscious", "breathing", "bleeding")) {
-                String v = parsed.path(key).asText("unknown");
-                if (!"unknown".equals(v)) facts.put(key, v);
-            }
-            boolean urgent = parsed.path("urgent").asBoolean(false)
-                || firstAidKb.isRedFlagUtterance(transcript);
-            return new AudioTurnResult(transcript, reply, urgent);
-        } catch (Exception e) {
-            log.warn("Gemini audio turn failed: {}", e.getMessage());
-            return null;
         }
+        return null;
     }
 
     public record AudioTurnResult(String transcript, String reply, boolean urgent) {}

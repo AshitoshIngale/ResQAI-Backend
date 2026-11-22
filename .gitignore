@@ -19,3 +19,4 @@ key.properties
 
 # Logs
 *.log
+local-env.sh

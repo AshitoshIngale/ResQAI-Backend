@@ -78,7 +78,7 @@ public class EmergencyVoiceSessionDocument {
     /** Current mute state reported by the browser. */
     private boolean micMuted;
 
-    /** Conversation engine used: LLM (Sarvam chat) or DETERMINISTIC fallback. */
+    /** Conversation engine used: LLM (Gemini) or DETERMINISTIC fallback. */
     private String engineMode = "LLM";
 
     /** Facts collected from the bystander, e.g. conscious=no, bleeding=yes. */

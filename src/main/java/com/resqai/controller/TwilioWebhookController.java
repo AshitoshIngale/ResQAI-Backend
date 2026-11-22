@@ -8,7 +8,7 @@ import com.resqai.repository.EmergencyProfileRepository;
 import com.resqai.repository.UserRepository;
 import com.resqai.service.EmergencyCallScriptService;
 import com.resqai.service.FirstAidOrchestrator;
-import com.resqai.service.SarvamTtsService;
+import com.resqai.service.GeminiTtsService;
 import com.resqai.service.StateLanguageResolver;
 import com.resqai.service.TwilioVoiceService;
 import org.springframework.beans.factory.annotation.Value;
@@ -52,7 +52,7 @@ public class TwilioWebhookController {
     private final UserRepository users;
     private final EmergencyProfileRepository profiles;
     private final TwilioVoiceService voice;
-    private final SarvamTtsService tts;
+    private final GeminiTtsService tts;
     private final EmergencyCallScriptService scripts;
     private final com.resqai.repository.EmergencySmsIncidentRepository smsIncidents;
     private final FirstAidOrchestrator firstAid;
@@ -67,7 +67,7 @@ public class TwilioWebhookController {
                                    UserRepository users,
                                    EmergencyProfileRepository profiles,
                                    TwilioVoiceService voice,
-                                   SarvamTtsService tts,
+                                   GeminiTtsService tts,
                                    EmergencyCallScriptService scripts,
                                    com.resqai.repository.EmergencySmsIncidentRepository smsIncidents,
                                    FirstAidOrchestrator firstAid,
@@ -116,17 +116,17 @@ public class TwilioWebhookController {
             medical.name, medical.bloodGroup, medical.allergies, medical.conditions, regional);
 
         // Twilio aborts webhooks after ~15 seconds. This handler therefore
-        // NEVER calls the network: cached Sarvam audio -> <Play>; anything
+        // NEVER calls the network: cached Gemini audio -> <Play>; anything
         // cold -> Twilio's built-in <Say> for EN/HI (same words, instant),
         // and a background warm so the NEXT fetch has the regional audio.
         List<String[]> toWarm = new java.util.ArrayList<>();
         StringBuilder twiml = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n");
         twiml.append("  <Pause length=\"1\"/>\n");
         for (EmergencyCallScriptService.Segment segment : segments) {
-            SarvamTtsService.TtsResult audio =
+            GeminiTtsService.TtsResult audio =
                 tts.synthesizeCachedOnly(segment.text(), segment.languageCode());
-            if (audio.status() == SarvamTtsService.Status.SYNTHESIZED) {
-                String key = SarvamTtsService.cacheKey(segment.text(), segment.languageCode());
+            if (audio.status() == GeminiTtsService.Status.SYNTHESIZED) {
+                String key = GeminiTtsService.cacheKey(segment.text(), segment.languageCode());
                 twiml.append("  <Play>")
                     .append(publicUrl("/api/v1/tts/incident/" + reportId + "/" + key))
                     .append("</Play>\n");
@@ -152,7 +152,7 @@ public class TwilioWebhookController {
 
     /**
      * TwiML for SMS-TRIGGERED ambulance calls (spec PART 5). Uses Twilio's
-     * own <Say> - no Sarvam cache dependency - repeating the message twice,
+     * own <Say> - no TTS cache dependency - repeating the message twice,
      * in the incident's language (en/hi/mr), then a pause for acknowledgment.
      */
     @PostMapping(value = "/twiml/sms/{incidentId}", produces = MediaType.APPLICATION_XML_VALUE)

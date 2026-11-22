@@ -115,7 +115,7 @@ public class BystanderReportDocument {
     /** Compact per-recipient outcome summary (no credentials, no full record). */
     private String notificationDetail;
 
-    /** Sarvam voice-note transcript (limited information only). */
+    /** Gemini voice-note transcript (limited information only). */
     private String voiceTranscript;
 
     private Instant notificationAttemptedAt;

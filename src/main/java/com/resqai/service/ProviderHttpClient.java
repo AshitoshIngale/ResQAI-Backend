@@ -7,7 +7,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 
 /**
- * Minimal HTTP abstraction for outbound provider calls (Twilio / Sarvam) so
+ * Minimal HTTP abstraction for outbound provider calls (Twilio / Gemini) so
  * unit tests can substitute deterministic fake transports. Never used for the
  * offline conversation path — providers are online-only integrations.
  */
