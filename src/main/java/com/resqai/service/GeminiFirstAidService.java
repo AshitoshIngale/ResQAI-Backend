@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -152,6 +153,83 @@ public class GeminiFirstAidService {
             return null;
         }
     }
+
+    /**
+     * FULL AUDIO TURN (spec PART 7, Option B): the bystander's spoken
+     * utterance (WAV) goes straight to Gemini - it transcribes the speech
+     * AND writes the first-aid response in ONE call. The system instruction
+     * enforces English replies and every safety rule. Returns
+     * {"transcript":..., "reply":..., "urgent":...} or null on failure.
+     */
+    public AudioTurnResult audioTurn(EmergencyVoiceSessionDocument session,
+                                     String category,
+                                     FirstAidOrchestrator.MedicalContext medical,
+                                     byte[] wavBytes) {
+        if (!isConfigured() || wavBytes == null || wavBytes.length < 1000) return null;
+        String language = session.getLanguage() == null ? "en" : session.getLanguage();
+        try {
+            String systemInstruction = buildSystemInstruction(category, medical, language);
+            String b64 = Base64.getEncoder().encodeToString(wavBytes);
+
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("system_instruction", Map.of(
+                "parts", List.of(Map.of("text",
+                    systemInstruction + "\n\nFirst TRANSCRIBE the bystander's speech verbatim, "
+                    + "then respond as the emergency assistant. Reply with ONLY a JSON object: "
+                    + "{\"transcript\": \"<verbatim English transcript>\", "
+                    + "\"reply\": \"<your spoken response in English, max 60 words\", "
+                    + "\"conscious\": \"yes|no|unknown\", "
+                    + "\"breathing\": \"yes|no|unknown\", "
+                    + "\"bleeding\": \"yes|no|unknown\", "
+                    + "\"urgent\": true|false}"))));
+            body.put("contents", List.of(Map.of(
+                "role", "user",
+                "parts", List.of(Map.of(
+                    "inline_data", Map.of("mime_type", "audio/wav", "data", b64))))));
+            body.put("generationConfig", Map.of(
+                "temperature", 0.3,
+                "maxOutputTokens", 300));
+
+            String url = String.format(API_URL, resolveModel());
+            ProviderHttpClient.ProviderResponse response = http.send(
+                "POST", url, "application/json", "api-subscription-key " + apiKey,
+                mapper.writeValueAsBytes(body));
+            if (response.statusCode < 200 || response.statusCode >= 300) {
+                log.warn("Gemini audio turn HTTP {}: {}", response.statusCode,
+                    response.body == null ? "" : response.body.substring(0, Math.min(100, response.body.length())));
+                return null;
+            }
+            JsonNode root = mapper.readTree(response.body);
+            String text = root.path("candidates").path(0).path("content")
+                .path("parts").path(0).path("text").asText("").trim();
+            if (text.isEmpty()) return null;
+            // Strip markdown fences if the model adds them.
+            text = text.replace("```json", "").replace("```", "").trim();
+            JsonNode parsed = mapper.readTree(text);
+            String transcript = parsed.path("transcript").asText("").trim();
+            String reply = parsed.path("reply").asText("").trim();
+            if (reply.isEmpty()) return null;
+            // Safety post-validation on the reply.
+            if (firstAidKb.violatesSafety(reply)) {
+                log.warn("Gemini audio-turn reply violated safety patterns - discarded");
+                return null;
+            }
+            // Merge reported facts into the session.
+            Map<String, String> facts = session.getCollectedFacts();
+            for (String key : List.of("conscious", "breathing", "bleeding")) {
+                String v = parsed.path(key).asText("unknown");
+                if (!"unknown".equals(v)) facts.put(key, v);
+            }
+            boolean urgent = parsed.path("urgent").asBoolean(false)
+                || firstAidKb.isRedFlagUtterance(transcript);
+            return new AudioTurnResult(transcript, reply, urgent);
+        } catch (Exception e) {
+            log.warn("Gemini audio turn failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    public record AudioTurnResult(String transcript, String reply, boolean urgent) {}
 
     private String buildSystemInstruction(String category,
                                           FirstAidOrchestrator.MedicalContext medical,

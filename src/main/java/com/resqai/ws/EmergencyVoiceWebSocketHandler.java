@@ -283,11 +283,33 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
                     default -> "en-IN";
                 };
                 byte[] wav = AudioWavUtil.pcm16ToWav(utterancePcm, SAMPLE_RATE, 1);
-                var stt = sarvamSpeech.transcribe(wav, langCode);
-                String transcript = stt.transcript();
+                var reportOpt = reports.findByReportId(session.getIncidentId());
+                String category = reportOpt.map(r -> r.getCategory()).orElse("OTHER");
+                FirstAidOrchestrator.MedicalContext medical = medicalContext(session.getEmergencyCode());
+
+                String transcript = null;
+                String reply = null;
+                boolean urgent = false;
+
+                // PRIMARY BRAIN: one Gemini audio turn - the bystander's
+                // voice goes STRAIGHT to Gemini (it transcribes and writes
+                // the first-aid response in a single call, English enforced).
+                if (gemini.isConfigured()) {
+                    var turn = gemini.audioTurn(session, category, medical, wav);
+                    if (turn != null) {
+                        transcript = turn.transcript();
+                        reply = turn.reply();
+                        urgent = turn.urgent();
+                    }
+                }
+
+                // FALLBACK CHAIN (works at any cost):
                 if (transcript == null || transcript.isBlank()) {
-                    // Honest: the utterance could not be transcribed - tell
-                    // the bystander WHY it stayed silent instead of hanging.
+                    // Sarvam REST STT (verified) -> deterministic KB guidance.
+                    var stt = sarvamSpeech.transcribe(wav, langCode);
+                    transcript = stt.transcript();
+                }
+                if (transcript == null || transcript.isBlank()) {
                     sendJson(ctx.ws, Map.of("type", "diag", "message",
                         "Heard " + String.format("%.1f", ctx.speechFrames * 0.1)
                             + "s of audio but could not transcribe it - speak a "
@@ -297,20 +319,12 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
                 }
                 sendJson(ctx.ws, Map.of("type", "transcript", "role", "bystander", "text", transcript));
                 logHistory(session, "BYSTANDER", transcript);
-
-                var reportOpt = reports.findByReportId(session.getIncidentId());
-                String category = reportOpt.map(r -> r.getCategory()).orElse("OTHER");
-                FirstAidOrchestrator.MedicalContext medical = medicalContext(session.getEmergencyCode());
-
-                // Facts first (shared by both brains), then the reply.
                 conversation.updateFacts(session, transcript);
                 boolean redFlag = firstAidService.isRedFlagUtterance(transcript);
-                boolean urgent = redFlag;
+                urgent = urgent || redFlag;
+                sitrepService.recordTimeline(session.getIncidentId(),
+                    "BYSTANDER_REPORTED", transcript, redFlag);
 
-                String reply = null;
-                if (gemini.isConfigured()) {
-                    reply = gemini.reply(session, category, medical, transcript);
-                }
                 if (reply == null || reply.isBlank()) {
                     // Deterministic fallback: reviewed KB guidance - never silence.
                     var turn = conversation.handleUtterance(session, category, medical, transcript);
@@ -320,8 +334,6 @@ public class EmergencyVoiceWebSocketHandler extends BinaryWebSocketHandler {
                     logHistory(session, "AGENT", reply);
                 }
 
-                sitrepService.recordTimeline(session.getIncidentId(),
-                    "BYSTANDER_REPORTED", transcript, redFlag);
                 if (urgent) {
                     var urgentReport = sitrepService.generate(session, "URGENT", true);
                     sitrepService.relay(urgentReport, sitrepService.ambulanceDestination());
