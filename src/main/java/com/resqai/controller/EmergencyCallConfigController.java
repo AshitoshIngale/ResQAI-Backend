@@ -18,7 +18,7 @@ import java.util.Map;
 public class EmergencyCallConfigController {
 
     /** Bumped per release so the deployed version is verifiable from outside. */
-    public static final String BUILD_TAG = "2026-11-21-r4";
+    public static final String BUILD_TAG = "2026-11-22-r5";
 
     @Value("${resqai.emergency-call.destination:}")
     private String destination;
